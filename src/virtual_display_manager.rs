@@ -128,6 +128,25 @@ pub fn reset_all() -> ResultType<()> {
     }
 }
 
+/// After plugging in a virtual display, override its resolution.
+/// Spawns a background thread that waits for the default 1920x1080 to be applied,
+/// then changes all virtual displays to the requested resolution.
+pub fn set_virtual_display_resolution(w: u32, h: u32) {
+    if w == 1920 && h == 1080 {
+        return; // Default resolution, no override needed
+    }
+    let w = w as usize;
+    let h = h as usize;
+    std::thread::spawn(move || {
+        // try_reset_resolution_on_first_plug_in runs for up to 3s (10 * 300ms)
+        // Wait 4s so we override after it finishes
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        for name in windows::get_device_names(Some(AMYUNI_IDD_DEVICE_STRING)).iter() {
+            crate::platform::change_resolution(name, w, h).ok();
+        }
+    });
+}
+
 pub mod rustdesk_idd {
     use super::windows;
     use hbb_common::{allow_err, bail, lazy_static, log, ResultType};

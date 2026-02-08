@@ -126,6 +126,7 @@ class _RemotePageState extends State<RemotePage>
           _ffi.ffiModel.pi.platform, _ffi.dialogManager);
       _ffi.recordingModel
           .updateStatus(bind.sessionGetIsRecording(sessionId: _ffi.sessionId));
+      _maybeAutoAddVirtualDisplay();
     });
     _ffi.canvasModel.initializeEdgeScrollFallback(this);
     _ffi.start(
@@ -294,6 +295,15 @@ class _RemotePageState extends State<RemotePage>
     if (isMacOS) {
       stateGlobal.setFullscreen(true);
     }
+  }
+
+  void _maybeAutoAddVirtualDisplay() {
+    if (!showVirtualDisplayMenu(_ffi)) return;
+    final autoVd = bind.sessionGetToggleOptionSync(
+        sessionId: _ffi.sessionId, arg: kOptionAutoVirtualDisplay);
+    if (!autoVd) return;
+    bind.sessionToggleVirtualDisplay(
+        sessionId: _ffi.sessionId, index: 0, on: true);
   }
 
   @override
