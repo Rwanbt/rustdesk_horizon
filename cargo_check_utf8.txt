@@ -1,0 +1,85 @@
+﻿cargo :     Blocking waiting for 
+file lock on build directory
+Au caractère Ligne:1 : 1
++ cargo check --features flutter > 
+cargo_check_output.txt 2>&1
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSp 
+   ecified: (    Blocking wa...bui  
+  ld directory:String) [], Remote   
+ Exception
+    + FullyQualifiedErrorId : Nativ 
+   eCommandError
+ 
+   Compiling bindgen v0.59.2
+   Compiling bindgen v0.71.1
+   Compiling bindgen v0.65.1
+   Compiling machine-uid v0.3.0 (htt
+ps://github.com/rustdesk-org/machine
+-uid#381ff579)
+   Compiling magnum-opus v0.4.0 (htt
+ps://github.com/rustdesk-org/magnum-
+opus#5cd2bf98)
+   Compiling scrap v0.5.0 
+(D:\App\Fulldesk\libs\scrap)
+   Compiling kcp-sys v0.1.0 (https:/
+/github.com/rustdesk-org/kcp-sys#32a
+6c09f)
+    Checking hbb_common v0.1.0 
+(D:\App\Fulldesk\libs\hbb_common)
+error: failed to run custom build 
+command for `scrap v0.5.0 
+(D:\App\Fulldesk\libs\scrap)`
+
+Caused by:
+  process didn't exit successfully: 
+`D:\App\Fulldesk\target\debug\build\
+scrap-28868abab2ce19b8\build-script-
+build` (exit code: 101)
+  --- stdout
+  cargo:rustc-check-cfg=cfg(dxgi,qua
+rtz,x11)
+  cargo:rerun-if-env-changed=NO_PKG_
+CONFIG_libyuv
+  cargo:info=x64-windows-static
+  cargo:rustc-link-lib=static=yuv
+  cargo:rustc-link-search=d:\App\Ful
+ldesk\vcpkg_installed\x64-windows-st
+atic\lib
+  cargo:include=d:\App\Fulldesk\vcpk
+g_installed\x64-windows-static\inclu
+de
+  cargo:rerun-if-env-changed=NO_PKG_
+CONFIG_libvpx
+  cargo:info=x64-windows-static
+  cargo:rustc-link-lib=static=vpx
+  cargo:rustc-link-search=d:\App\Ful
+ldesk\vcpkg_installed\x64-windows-st
+atic\lib
+  cargo:include=d:\App\Fulldesk\vcpk
+g_installed\x64-windows-static\inclu
+de
+  rerun-if-changed=D:\App\Fulldesk\l
+ibs\scrap\src\bindings\vpx_ffi.h
+  rerun-if-changed=d:\App\Fulldesk\v
+cpkg_installed\x64-windows-static\in
+clude
+
+  --- stderr
+  D:\App\Fulldesk\libs\scrap\src\bin
+dings\vpx_ffi.h:1:10: fatal error: 
+'vpx/vp8.h' file not found
+
+  thread 'main' panicked at 
+libs\scrap\build.rs:161:18:
+  called `Result::unwrap()` on an 
+`Err` value: ClangDiagnostic("D:\\Ap
+p\\Fulldesk\\libs\\scrap\\src\\bindi
+ngs\\vpx_ffi.h:1:10: fatal error: 
+'vpx/vp8.h' file not found\n")
+  note: run with `RUST_BACKTRACE=1` 
+environment variable to display a 
+backtrace
+warning: build failed, waiting for 
+other jobs to finish...

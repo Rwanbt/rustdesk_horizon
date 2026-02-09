@@ -270,5 +270,6 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("keep-awake-during-outgoing-sessions-label", "Keep screen awake during outgoing sessions"),
         ("keep-awake-during-incoming-sessions-label", "Keep screen awake during incoming sessions"),
         ("Auto virtual display on connect", "Auto virtual display on connect"),
+        ("Scale native", "Native Scale"),
     ].iter().cloned().collect();
 }

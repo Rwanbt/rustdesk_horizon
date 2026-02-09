@@ -1,9 +1,16 @@
 use hbb_common::{bail, platform::windows::is_windows_version_or_greater, ResultType};
+use std::sync::Mutex;
 
 // This string is defined here.
 //  https://github.com/rustdesk-org/RustDeskIddDriver/blob/b370aad3f50028b039aad211df60c8051c4a64d6/RustDeskIddDriver/RustDeskIddDriver.inf#LL73C1-L73C40
 pub const RUSTDESK_IDD_DEVICE_STRING: &'static str = "RustDeskIddDriver Device\0";
 pub const AMYUNI_IDD_DEVICE_STRING: &'static str = "USB Mobile Monitor Virtual Display\0";
+
+lazy_static::lazy_static! {
+    /// Custom resolution requested by the client. When set,
+    /// try_reset_resolution_on_first_plug_in will use this instead of 1920x1080.
+    static ref CUSTOM_VD_RESOLUTION: Mutex<Option<(usize, usize)>> = Mutex::new(None);
+}
 
 const IDD_IMPL: &str = IDD_IMPL_AMYUNI;
 const IDD_IMPL_RUSTDESK: &str = "rustdesk_idd";
@@ -128,23 +135,14 @@ pub fn reset_all() -> ResultType<()> {
     }
 }
 
-/// After plugging in a virtual display, override its resolution.
-/// Spawns a background thread that waits for the default 1920x1080 to be applied,
-/// then changes all virtual displays to the requested resolution.
+/// Store a custom resolution for the next virtual display plug-in.
+/// The Amyuni driver's try_reset_resolution_on_first_plug_in will use this
+/// resolution instead of the default 1920x1080.
 pub fn set_virtual_display_resolution(w: u32, h: u32) {
     if w == 1920 && h == 1080 {
         return; // Default resolution, no override needed
     }
-    let w = w as usize;
-    let h = h as usize;
-    std::thread::spawn(move || {
-        // try_reset_resolution_on_first_plug_in runs for up to 3s (10 * 300ms)
-        // Wait 4s so we override after it finishes
-        std::thread::sleep(std::time::Duration::from_secs(4));
-        for name in windows::get_device_names(Some(AMYUNI_IDD_DEVICE_STRING)).iter() {
-            crate::platform::change_resolution(name, w, h).ok();
-        }
-    });
+    *CUSTOM_VD_RESOLUTION.lock().unwrap() = Some((w as usize, h as usize));
 }
 
 pub mod rustdesk_idd {
@@ -411,8 +409,44 @@ pub mod amyuni_idd {
     };
     use winapi::{
         shared::{guiddef::GUID, winerror::ERROR_NO_MORE_ITEMS},
-        um::shellapi::ShellExecuteA,
+        um::winnt::KEY_READ,
     };
+    use winreg::enums::*;
+
+    fn update_amyuni_resolutions(w: usize, h: usize) {
+        let hklm = winreg::RegKey::predef(HKEY_LOCAL_MACHINE);
+        let path = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\WUDF\\Services\\usbmmIdd\\Parameters\\Monitors";
+        if let Ok(key) = hklm.open_subkey_with_flags(path, KEY_READ | KEY_WRITE) {
+            let res_str = format!("{}x{}", w, h);
+            let mut found = false;
+            let mut first_empty = None;
+
+            for i in 1..=10 {
+                let name = format!("Resolution{}", i);
+                if let Ok(val) = key.get_value::<String, _>(&name) {
+                    if val == res_str {
+                        found = true;
+                        break;
+                    }
+                } else if first_empty.is_none() {
+                    first_empty = Some(name);
+                }
+            }
+
+            if !found {
+                if let Some(name) = first_empty.or_else(|| Some("Resolution10".to_string())) {
+                    log::info!(
+                        "Injecting customized resolution {} into Amyuni registry",
+                        res_str
+                    );
+                    if let Err(e) = key.set_value(&name, &res_str) {
+                        log::error!("Failed to inject resolution into registry: {}", e);
+                    }
+                }
+            }
+        }
+    }
+    use winapi::um::shellapi::ShellExecuteA;
 
     const INF_PATH: &str = r#"usbmmidd_v2\usbmmIdd.inf"#;
     const INTERFACE_GUID: GUID = GUID {
@@ -594,6 +628,11 @@ pub mod amyuni_idd {
         let timeout = Duration::from_secs(3);
         let now = Instant::now();
         let reg_connectivity_old = reg_display_settings::read_reg_connectivity();
+        if add {
+            if let Some((w, h)) = *super::CUSTOM_VD_RESOLUTION.lock().unwrap() {
+                update_amyuni_resolutions(w, h);
+            }
+        }
         loop {
             match plug_monitor_(add, wait_timeout) {
                 Ok(_) => {
@@ -633,10 +672,16 @@ pub mod amyuni_idd {
             std::thread::sleep(Duration::from_millis(300));
             if let Ok(reg_connectivity_new) = reg_display_settings::read_reg_connectivity() {
                 if reg_connectivity_new.len() != old_connectivity_len {
+                    // Use custom resolution if one was requested, otherwise use default
+                    let (w, h) = super::CUSTOM_VD_RESOLUTION
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .unwrap_or((width, height));
                     for name in
                         windows::get_device_names(Some(super::AMYUNI_IDD_DEVICE_STRING)).iter()
                     {
-                        crate::platform::change_resolution(&name, width, height).ok();
+                        crate::platform::change_resolution(&name, w, h).ok();
                     }
                     break;
                 }

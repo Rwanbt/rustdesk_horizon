@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -376,6 +377,11 @@ Future<List<TRadioMenu<String>>> toolbarViewStyle(
     TRadioMenu<String>(
         child: Text(translate('Scale adaptive')),
         value: kRemoteViewStyleAdaptive,
+        groupValue: groupValue,
+        onChanged: onChanged),
+    TRadioMenu<String>(
+        child: Text(translate('Scale native')),
+        value: kRemoteViewStyleNative,
         groupValue: groupValue,
         onChanged: onChanged),
     TRadioMenu<String>(
@@ -920,6 +926,25 @@ List<TToggleMenu> toolbarKeyboardToggles(FFI ffi) {
   return v;
 }
 
+/// Toggle a virtual display, sending the device's physical resolution first
+/// on mobile so the server creates the VD at the correct aspect ratio.
+Future<void> toggleVirtualDisplayWithResolution({
+  required SessionID sessionId,
+  required int index,
+  required bool on,
+}) async {
+  if (on && (isAndroid || isIOS)) {
+    final physicalSize = ui.window.physicalSize;
+    final w = physicalSize.width.toInt();
+    final h = physicalSize.height.toInt();
+    if (w > 0 && h > 0) {
+      bind.sessionSendChat(sessionId: sessionId, text: "#vd_res ${w}x$h");
+      await Future.delayed(const Duration(milliseconds: 150));
+    }
+  }
+  bind.sessionToggleVirtualDisplay(sessionId: sessionId, index: index, on: on);
+}
+
 bool showVirtualDisplayMenu(FFI ffi) {
   if (ffi.ffiModel.pi.platform != kPeerPlatformWindows) {
     return false;
@@ -950,7 +975,7 @@ List<Widget> getVirtualDisplayMenuChildren(
                 ? null
                 : (bool? value) async {
                     if (value != null) {
-                      bind.sessionToggleVirtualDisplay(
+                      await toggleVirtualDisplayWithResolution(
                           sessionId: ffi.sessionId, index: i + 1, on: value);
                       clickCallBack?.call();
                     }
@@ -994,8 +1019,8 @@ List<Widget> getVirtualDisplayMenuChildren(
               TextButton(
                 onPressed: privacyModeState.isNotEmpty || count == 4
                     ? null
-                    : () {
-                        bind.sessionToggleVirtualDisplay(
+                    : () async {
+                        await toggleVirtualDisplayWithResolution(
                             sessionId: ffi.sessionId, index: 0, on: true);
                         clickCallBack?.call();
                       },

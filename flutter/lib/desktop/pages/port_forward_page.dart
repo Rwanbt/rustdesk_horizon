@@ -112,7 +112,7 @@ class _PortForwardPageState extends State<PortForwardPage>
                 Flexible(
                   child: Container(
                     decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.background,
+                        color: Theme.of(context).colorScheme.surface,
                         border: Border.all(width: 1, color: MyTheme.border)),
                     child:
                         widget.isRDP ? buildRdp(context) : buildTunnel(context),
@@ -191,8 +191,7 @@ class _PortForwardPageState extends State<PortForwardPage>
 
     return Container(
       height: _kRowHeight,
-      decoration:
-          BoxDecoration(color: Theme.of(context).colorScheme.background),
+      decoration: BoxDecoration(color: Theme.of(context).colorScheme.surface),
       child: Row(children: [
         buildTunnelInputCell(context,
             controller: localPortController,
@@ -261,7 +260,7 @@ class _PortForwardPageState extends State<PortForwardPage>
               ? MyTheme.currentThemeMode() == ThemeMode.dark
                   ? const Color(0xFF202020)
                   : const Color(0xFFF4F5F6)
-              : Theme.of(context).colorScheme.background),
+              : Theme.of(context).colorScheme.surface),
       child: Row(children: [
         text(pf.localPort.toString()),
         const SizedBox(width: _kColumn1Width),
@@ -322,8 +321,8 @@ class _PortForwardPageState extends State<PortForwardPage>
             } else {
               return Container(
                 height: _kRowHeight,
-                decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.background),
+                decoration:
+                    BoxDecoration(color: Theme.of(context).colorScheme.surface),
                 child: Row(children: [
                   Expanded(
                     child: Align(
