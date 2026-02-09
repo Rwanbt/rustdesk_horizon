@@ -63,8 +63,7 @@ class _MyGroupState extends State<MyGroup> {
         Container(
           decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(12),
-              border:
-                  Border.all(color: Theme.of(context).colorScheme.background)),
+              border: Border.all(color: Theme.of(context).colorScheme.surface)),
           child: Container(
             width: 150,
             height: double.infinity,
@@ -99,8 +98,7 @@ class _MyGroupState extends State<MyGroup> {
         Container(
           decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(6),
-              border:
-                  Border.all(color: Theme.of(context).colorScheme.background)),
+              border: Border.all(color: Theme.of(context).colorScheme.surface)),
           child: Container(
             child: Column(
               mainAxisSize: MainAxisSize.min,

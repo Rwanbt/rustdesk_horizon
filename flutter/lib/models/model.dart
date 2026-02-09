@@ -2049,7 +2049,7 @@ class ViewStyle {
 
   double get scale {
     double s = 1.0;
-    if (style == kRemoteViewStyleAdaptive) {
+    if (style == kRemoteViewStyleAdaptive || style == kRemoteViewStyleNative) {
       if (width != 0 &&
           height != 0 &&
           displayWidth != 0 &&
@@ -2260,6 +2260,7 @@ class CanvasModel with ChangeNotifier {
     if (_lastViewStyle.style != viewStyle.style) {
       _resetScroll();
     }
+    final styleChanged = _lastViewStyle.style != viewStyle.style;
     _lastViewStyle = viewStyle;
     _scale = viewStyle.scale;
 
@@ -2847,7 +2848,7 @@ class CursorModel with ChangeNotifier {
   double _displayOriginY = 0;
   DateTime? _firstUpdateMouseTime;
   Rect? _windowRect;
-  List<RemoteWindowCoords> _remoteWindowCoords = [];
+  final List<RemoteWindowCoords> _remoteWindowCoords = [];
   bool gotMouseControl = true;
   DateTime _lastPeerMouse = DateTime.now()
       .subtract(Duration(milliseconds: 3000 * kMouseControlTimeoutMSec));

@@ -297,12 +297,12 @@ class _RemotePageState extends State<RemotePage>
     }
   }
 
-  void _maybeAutoAddVirtualDisplay() {
+  void _maybeAutoAddVirtualDisplay() async {
     if (!showVirtualDisplayMenu(_ffi)) return;
     final autoVd = bind.sessionGetToggleOptionSync(
         sessionId: _ffi.sessionId, arg: kOptionAutoVirtualDisplay);
     if (!autoVd) return;
-    bind.sessionToggleVirtualDisplay(
+    await toggleVirtualDisplayWithResolution(
         sessionId: _ffi.sessionId, index: 0, on: true);
   }
 

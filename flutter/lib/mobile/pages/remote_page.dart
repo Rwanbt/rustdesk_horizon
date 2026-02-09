@@ -62,12 +62,16 @@ class RemotePage extends StatefulWidget {
 class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Timer? _timer;
   bool _showBar = !isWebDesktop;
+  bool _showFloatingButton = false;
   bool _showGestureHelp = false;
   String _value = '';
   Orientation? _currentOrientation;
   double _viewInsetsBottom = 0;
   final _uniqueKey = UniqueKey();
   Timer? _timerDidChangeMetrics;
+
+  Timer? _hideBarTimer;
+  bool _wasBarVisibleBeforeHide = true;
 
   final _blockableOverlayState = BlockableOverlayState();
 
@@ -93,6 +97,12 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    if (isAndroid || isIOS) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    }
+    if (isAndroid || isIOS) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    }
     gFFI.ffiModel.updateEventListener(sessionId, widget.id);
     gFFI.start(
       widget.id,
@@ -101,7 +111,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       forceRelay: widget.forceRelay,
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
       gFFI.dialogManager
           .showLoading(translate('Connecting...'), onCancel: closeConnection);
     });
@@ -125,6 +135,35 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       _maybeAutoAddVirtualDisplay();
     });
     WidgetsBinding.instance.addObserver(this);
+    _startAutoHideTimer();
+  }
+
+  void _startAutoHideTimer() {
+    _hideBarTimer?.cancel();
+    _hideBarTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) {
+        setState(() {
+          _wasBarVisibleBeforeHide = _showBar;
+          _showBar = false;
+          _showFloatingButton = false;
+        });
+      }
+    });
+  }
+
+  void _resetHideBarTimer() {
+    // Restore the UI to the state it was in before auto-hide:
+    // - If the bar was deployed before hiding -> restore the full bar
+    // - If only the FAB was visible -> restore just the FAB
+    if (!_showBar && !_showFloatingButton) {
+      setState(() {
+        if (_wasBarVisibleBeforeHide) {
+          _showBar = true;
+        }
+        _showFloatingButton = true;
+      });
+    }
+    _startAutoHideTimer();
   }
 
   @override
@@ -141,6 +180,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     _physicalFocusNode.dispose();
     await gFFI.close();
     _timer?.cancel();
+    _hideBarTimer?.cancel();
     _timerDidChangeMetrics?.cancel();
     gFFI.dialogManager.dismissAll();
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
@@ -157,16 +197,17 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
       trySyncClipboard();
     }
   }
 
-  void _maybeAutoAddVirtualDisplay() {
+  void _maybeAutoAddVirtualDisplay() async {
     if (!showVirtualDisplayMenu(gFFI)) return;
     final autoVd = bind.sessionGetToggleOptionSync(
         sessionId: gFFI.sessionId, arg: kOptionAutoVirtualDisplay);
     if (!autoVd) return;
-    bind.sessionToggleVirtualDisplay(
+    await toggleVirtualDisplayWithResolution(
         sessionId: gFFI.sessionId, index: 0, on: true);
     _autoVirtualDisplayAdded = true;
   }
@@ -212,7 +253,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   void onSoftKeyboardChanged(bool visible) {
     if (!visible) {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
       // [pi.version.isNotEmpty] -> check ready or not, avoid login without soft-keyboard
       if (gFFI.chatModel.chatWindowOverlayEntry == null &&
           gFFI.ffiModel.pi.version.isNotEmpty) {
@@ -369,7 +410,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final keyboardIsVisible =
         keyboardVisibilityController.isVisible && _showEdit;
-    final showActionButton = !_showBar || keyboardIsVisible || _showGestureHelp;
+    // Show FAB when: keyboard is up, gesture help is shown, or bar is hidden but user recently interacted
+    final showActionButton = keyboardIsVisible ||
+        _showGestureHelp ||
+        (!_showBar && _showFloatingButton);
 
     return WillPopScope(
       onWillPop: () async {
@@ -405,6 +449,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                         _showBar = !_showBar;
                       }
                     });
+                    _startAutoHideTimer();
                   }),
           bottomNavigationBar: Obx(() => Stack(
                 alignment: Alignment.bottomCenter,
@@ -431,6 +476,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                     child: isWebDesktop
                         ? getBodyForDesktopWithListener()
                         : SafeArea(
+                            top: false,
+                            bottom: false,
+                            left: false,
+                            right: false,
                             child:
                                 OrientationBuilder(builder: (ctx, orientation) {
                               if (_currentOrientation != orientation) {
@@ -448,6 +497,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                                     : RawTouchGestureDetectorRegion(
                                         child: getBodyForMobile(),
                                         ffi: gFFI,
+                                        onInteraction: _resetHideBarTimer,
                                       ),
                               );
                             }),
@@ -568,6 +618,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                     ? null
                     : () {
                         setState(() => _showBar = !_showBar);
+                        _startAutoHideTimer();
                       },
               )),
         ],

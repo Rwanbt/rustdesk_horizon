@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:js' as js;
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'dart:html' as html;
@@ -29,7 +28,7 @@ sealed class EventToUI {
 }
 
 class EventToUI_Event implements EventToUI {
-  const EventToUI_Event(final String field0) : this.field = field0;
+  const EventToUI_Event(final String field0) : field = field0;
   final String field;
   String get field0 => field;
 }
