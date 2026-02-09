@@ -880,10 +880,10 @@ impl Connection {
                                 if conn.follow_remote_cursor {
                                     conn.handle_cursor_switch_display(pos.clone()).await;
                                 }
-                            }
-                            #[cfg(target_os = "macos")]
-                            if let Some(new_msg) = conn.retina.on_cursor_pos(&pos, conn.display_idx) {
-                                msg = Arc::new(new_msg);
+                                #[cfg(target_os = "macos")]
+                                if let Some(new_msg) = conn.retina.on_cursor_pos(&pos, conn.display_idx) {
+                                    msg = Arc::new(new_msg);
+                                }
                             }
                         }
                         Some(message::Union::MultiClipboards(_multi_clipboards)) => {
