@@ -99,8 +99,6 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     super.initState();
     if (isAndroid || isIOS) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    }
-    if (isAndroid || isIOS) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     }
     gFFI.ffiModel.updateEventListener(sessionId, widget.id);
@@ -420,7 +418,16 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         clientClose(sessionId, gFFI);
         return false;
       },
-      child: Scaffold(
+      child: MediaQuery(
+        // Remove all system padding (cutout/notch, status bar) so the remote
+        // desktop canvas fills the entire physical screen without black borders.
+        data: MediaQuery.of(context).copyWith(
+          padding: EdgeInsets.zero,
+          viewPadding: EdgeInsets.zero,
+        ),
+        child: Scaffold(
+          extendBody: true,
+          extendBodyBehindAppBar: true,
           // workaround for https://github.com/rustdesk/rustdesk/issues/3131
           floatingActionButtonLocation: keyboardIsVisible
               ? FABLocation(FloatingActionButtonLocation.endFloat, 0, -35)
@@ -507,6 +514,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               ],
             )),
           )),
+      ),
     );
   }
 
