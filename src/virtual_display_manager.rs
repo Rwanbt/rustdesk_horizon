@@ -1106,6 +1106,7 @@ pub mod linux_evdi {
     use std::collections::HashMap;
     use std::ffi::CStr;
     use std::os::raw::{c_int, c_uint, c_void};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     type EvdiHandle = *mut c_void;
@@ -1255,19 +1256,68 @@ pub mod linux_evdi {
         }
     }
 
+    impl VirtualDisplayManager {
+        /// Retry loading libevdi if it wasn't available at startup.
+        fn try_reload_lib(&mut self) -> bool {
+            if self.lib.is_some() {
+                return true;
+            }
+            self.lib = EvdiLib::load();
+            self.lib.is_some()
+        }
+    }
+
     lazy_static::lazy_static! {
         static ref MANAGER: Arc<Mutex<VirtualDisplayManager>> =
             Arc::new(Mutex::new(VirtualDisplayManager::default()));
     }
 
+    // Only attempt auto-install once per session
+    static INSTALL_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+
+    /// Auto-install EVDI packages and load kernel module if needed.
+    /// Called from is_supported() when EVDI is not yet available.
+    fn ensure_evdi_available() -> bool {
+        if INSTALL_ATTEMPTED.swap(true, Ordering::SeqCst) {
+            // Already attempted this session
+            return MANAGER.lock().unwrap().lib.is_some()
+                && std::path::Path::new("/sys/module/evdi").exists();
+        }
+
+        log::info!("EVDI: not available, attempting auto-installation...");
+
+        // Step 1: Install packages
+        if !crate::platform::linux::install_evdi_packages() {
+            log::error!("EVDI: auto-installation of packages failed");
+            return false;
+        }
+
+        // Step 2: Load kernel module
+        if !crate::platform::linux::load_evdi_module() {
+            log::error!("EVDI: failed to load kernel module after installation");
+            return false;
+        }
+
+        // Step 3: Retry loading the library
+        let loaded = MANAGER.lock().unwrap().try_reload_lib();
+        if loaded {
+            log::info!("EVDI: auto-installation successful, library loaded");
+        } else {
+            log::error!("EVDI: library still not loadable after installation");
+        }
+        loaded
+    }
+
     pub fn is_supported() -> bool {
-        // Check if kernel module is loaded AND libevdi is available
         let module_loaded = std::path::Path::new("/sys/module/evdi").exists();
         let lib_available = MANAGER.lock().unwrap().lib.is_some();
-        if lib_available && !module_loaded {
-            log::info!("EVDI: libevdi found but kernel module not loaded (try: sudo modprobe evdi)");
+
+        if lib_available && module_loaded {
+            return true;
         }
-        lib_available && module_loaded
+
+        // Try auto-install
+        ensure_evdi_available()
     }
 
     pub fn plug_in_headless() -> ResultType<()> {
