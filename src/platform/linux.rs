@@ -133,6 +133,71 @@ pub fn is_evdi_available() -> bool {
     std::path::Path::new("/sys/module/evdi").exists()
 }
 
+/// Detect package manager and install EVDI packages.
+/// Returns true if installation succeeded (or packages already present).
+pub fn install_evdi_packages() -> bool {
+    let cmd = if has_cmd("apt-get") {
+        "apt-get install -y evdi-dkms libevdi0"
+    } else if has_cmd("dnf") {
+        "dnf install -y evdi"
+    } else if has_cmd("pacman") {
+        "pacman -S --noconfirm evdi"
+    } else if has_cmd("zypper") {
+        "zypper install -y evdi"
+    } else {
+        log::error!("EVDI auto-install: no supported package manager found");
+        return false;
+    };
+
+    log::info!("EVDI auto-install: running '{}'", cmd);
+    if is_root() {
+        match run_cmds(cmd) {
+            Ok(output) => {
+                let success = !output.contains("E: Unable to locate")
+                    && !output.contains("Error:");
+                if success {
+                    log::info!("EVDI auto-install: packages installed successfully");
+                } else {
+                    log::error!("EVDI auto-install: installation may have failed: {}", output);
+                }
+                success
+            }
+            Err(e) => {
+                log::error!("EVDI auto-install: command failed: {}", e);
+                false
+            }
+        }
+    } else {
+        log::info!("EVDI auto-install: not root, using privilege escalation");
+        run_cmds_privileged(cmd)
+    }
+}
+
+/// Load the EVDI kernel module via modprobe.
+/// Returns true if the module is loaded after the call.
+pub fn load_evdi_module() -> bool {
+    if is_evdi_available() {
+        return true;
+    }
+
+    log::info!("EVDI auto-install: loading kernel module (modprobe evdi)");
+    let cmd = "modprobe evdi";
+    if is_root() {
+        let _ = run_cmds(cmd);
+    } else {
+        run_cmds_privileged(cmd);
+    }
+
+    // Verify it loaded
+    let loaded = is_evdi_available();
+    if loaded {
+        log::info!("EVDI auto-install: kernel module loaded successfully");
+    } else {
+        log::error!("EVDI auto-install: failed to load kernel module");
+    }
+    loaded
+}
+
 #[inline]
 pub fn is_login_screen_wayland() -> bool {
     let values = get_values_of_seat0_with_gdm_wayland(&[0, 2]);
