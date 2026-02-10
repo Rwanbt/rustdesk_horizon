@@ -2,7 +2,7 @@ use super::*;
 use crate::common::SimpleCallOnReturn;
 #[cfg(target_os = "linux")]
 use crate::platform::linux::is_x11;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use crate::virtual_display_manager;
 #[cfg(windows)]
 use hbb_common::get_version_number;
@@ -188,6 +188,13 @@ fn displays_to_msg(displays: Vec<DisplayInfo>) -> Message {
         let m = crate::virtual_display_manager::get_platform_additions();
         pi.platform_additions = serde_json::to_string(&m).unwrap_or_default();
     }
+    #[cfg(target_os = "linux")]
+    {
+        let m = crate::virtual_display_manager::get_platform_additions();
+        if !m.is_empty() {
+            pi.platform_additions = serde_json::to_string(&m).unwrap_or_default();
+        }
+    }
 
     // current_display should not be used in server.
     // It is set to 0 for compatibility with old clients.
@@ -257,7 +264,10 @@ pub(super) fn get_original_resolution(
     #[cfg(windows)]
     let is_rustdesk_virtual_display =
         crate::virtual_display_manager::rustdesk_idd::is_virtual_display(&display_name);
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    let is_rustdesk_virtual_display =
+        crate::virtual_display_manager::linux_evdi::is_virtual_display(&display_name);
+    #[cfg(not(any(windows, target_os = "linux")))]
     let is_rustdesk_virtual_display = false;
     Some(if is_rustdesk_virtual_display {
         Resolution {
@@ -420,7 +430,23 @@ fn no_displays(displays: &Vec<Display>) -> bool {
 #[inline]
 #[cfg(not(windows))]
 pub fn try_get_displays() -> ResultType<Vec<Display>> {
-    Ok(Display::all()?)
+    let mut displays = Display::all()?;
+    #[cfg(target_os = "linux")]
+    {
+        if displays.is_empty()
+            && crate::platform::linux::is_headless_allowed()
+            && virtual_display_manager::is_virtual_display_supported()
+        {
+            log::debug!("no displays on Linux, creating virtual display via EVDI");
+            if let Err(e) = virtual_display_manager::plug_in_headless() {
+                log::error!("plug_in_headless failed: {}", e);
+            } else {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                displays = Display::all()?;
+            }
+        }
+    }
+    Ok(displays)
 }
 
 #[inline]

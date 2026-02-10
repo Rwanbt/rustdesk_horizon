@@ -73,7 +73,7 @@ pub mod clipboard_file;
 
 pub mod privacy_mode;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub mod virtual_display_manager;
 
 mod kcp_stream;

@@ -62,10 +62,8 @@ use system_shutdown;
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use crate::virtual_display_manager;
-#[cfg(windows)]
-use virtual_display;
 pub type Sender = mpsc::UnboundedSender<(Instant, Arc<Message>)>;
 
 lazy_static::lazy_static! {
@@ -249,9 +247,9 @@ pub struct Connection {
     // by peer
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     enable_file_transfer: bool,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     virtual_display_resolution: Option<(u32, u32)>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     virtual_display_indices: Vec<i32>,
     // by peer
     audio_sender: Option<MediaSender>,
@@ -439,9 +437,9 @@ impl Connection {
             disable_audio: false,
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             enable_file_transfer: false,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             virtual_display_resolution: None,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             virtual_display_indices: Vec::new(),
             disable_clipboard: false,
             disable_keyboard: false,
@@ -1466,6 +1464,13 @@ impl Connection {
                 "supported_privacy_mode_impl".into(),
                 json!(privacy_mode::get_supported_privacy_mode_impl()),
             );
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let vd_additions = virtual_display_manager::get_platform_additions();
+            if !vd_additions.is_empty() {
+                platform_additions.extend(vd_additions);
+            }
         }
         #[cfg(target_os = "macos")]
         {
@@ -3022,7 +3027,7 @@ impl Connection {
                         let set = displays.set.iter().map(|d| *d as usize).collect::<Vec<_>>();
                         self.capture_displays(&add, &sub, &set).await;
                     }
-                    #[cfg(windows)]
+                    #[cfg(any(windows, target_os = "linux"))]
                     Some(misc::Union::ToggleVirtualDisplay(t)) => {
                         self.toggle_virtual_display(t).await;
                     }
@@ -3030,7 +3035,7 @@ impl Connection {
                         self.toggle_privacy_mode(t).await;
                     }
                     Some(misc::Union::ChatMessage(c)) => {
-                        #[cfg(windows)]
+                        #[cfg(any(windows, target_os = "linux"))]
                         if c.text.starts_with("#vd_res ") {
                             if let Some(res) = c.text.strip_prefix("#vd_res ") {
                                 let parts: Vec<&str> = res.split('x').collect();
@@ -3050,7 +3055,7 @@ impl Connection {
                             self.chat_unanswered = true;
                             self.update_auto_disconnect_timer();
                         }
-                        #[cfg(not(windows))]
+                        #[cfg(not(any(windows, target_os = "linux")))]
                         {
                             self.send_to_cm(ipc::Data::ChatMessage { text: c.text });
                             self.chat_unanswered = true;
@@ -3627,7 +3632,7 @@ impl Connection {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     async fn toggle_virtual_display(&mut self, t: ToggleVirtualDisplay) {
         let make_msg = |text: String| {
             let mut msg_out = Message::new();
@@ -3649,16 +3654,15 @@ impl Connection {
 
         if t.on {
             if !virtual_display_manager::is_virtual_display_supported() {
-                self.send(make_msg("idd_not_support_under_win10_2004_tip".to_string()))
+                self.send(make_msg("Virtual display not supported on this system".to_string()))
                     .await;
             } else {
                 let (w, h) = self
                     .virtual_display_resolution
                     .take()
                     .unwrap_or((1920, 1080));
-                // Store custom resolution for Amyuni path (reads it in plug_in_monitor)
                 virtual_display_manager::set_custom_resolution(w, h);
-                let modes = vec![virtual_display::MonitorMode {
+                let modes = vec![virtual_display_manager::MonitorMode {
                     width: w,
                     height: h,
                     sync: 60,
@@ -4181,7 +4185,7 @@ impl Connection {
         let data = ipc::Data::Close;
         self.tx_to_cm.send(data).ok();
         self.port_forward_socket.take();
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
             // Plug out virtual displays created by this connection
             for idx in self.virtual_display_indices.drain(..) {
@@ -5532,7 +5536,7 @@ mod raii {
                 }
                 #[cfg(not(any(target_os = "android", target_os = "ios")))]
                 display_service::restore_resolutions();
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "linux"))]
                 let _ = virtual_display_manager::reset_all();
                 #[cfg(target_os = "linux")]
                 scrap::wayland::pipewire::try_close_session();

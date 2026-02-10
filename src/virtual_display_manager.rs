@@ -1,14 +1,31 @@
-use hbb_common::{bail, platform::windows::is_windows_version_or_greater, ResultType};
+use hbb_common::{bail, ResultType};
 use std::sync::Mutex;
+
+#[cfg(windows)]
+use hbb_common::platform::windows::is_windows_version_or_greater;
+
+// Cross-platform MonitorMode type
+#[derive(Debug, Copy, Clone)]
+pub struct MonitorMode {
+    pub width: u32,
+    pub height: u32,
+    pub sync: u32,
+}
 
 // This string is defined here.
 //  https://github.com/rustdesk-org/RustDeskIddDriver/blob/b370aad3f50028b039aad211df60c8051c4a64d6/RustDeskIddDriver/RustDeskIddDriver.inf#LL73C1-L73C40
+#[cfg(windows)]
 pub const RUSTDESK_IDD_DEVICE_STRING: &'static str = "RustDeskIddDriver Device\0";
+#[cfg(windows)]
 pub const AMYUNI_IDD_DEVICE_STRING: &'static str = "USB Mobile Monitor Virtual Display\0";
 
+#[cfg(windows)]
 const IDD_IMPL: &str = IDD_IMPL_AMYUNI;
+#[cfg(windows)]
 const IDD_IMPL_RUSTDESK: &str = "rustdesk_idd";
+#[cfg(windows)]
 const IDD_IMPL_AMYUNI: &str = "amyuni_idd";
+#[cfg(windows)]
 const IDD_PLUG_OUT_ALL_INDEX: i32 = -1;
 
 lazy_static::lazy_static! {
@@ -23,10 +40,12 @@ pub fn take_custom_resolution() -> Option<(u32, u32)> {
     CUSTOM_VD_RESOLUTION.lock().unwrap().take()
 }
 
+#[cfg(windows)]
 pub fn is_amyuni_idd() -> bool {
     IDD_IMPL == IDD_IMPL_AMYUNI
 }
 
+#[cfg(windows)]
 pub fn get_cur_device_string() -> &'static str {
     match IDD_IMPL {
         IDD_IMPL_RUSTDESK => RUSTDESK_IDD_DEVICE_STRING,
@@ -38,81 +57,164 @@ pub fn get_cur_device_string() -> &'static str {
 pub fn is_virtual_display_supported() -> bool {
     #[cfg(target_os = "windows")]
     {
-        is_windows_version_or_greater(10, 0, 19041, 0, 0)
+        return is_windows_version_or_greater(10, 0, 19041, 0, 0);
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    {
+        return linux_evdi::is_supported();
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         false
     }
 }
 
 pub fn plug_in_headless() -> ResultType<()> {
-    match IDD_IMPL {
-        IDD_IMPL_RUSTDESK => rustdesk_idd::plug_in_headless(),
-        IDD_IMPL_AMYUNI => amyuni_idd::plug_in_headless(),
-        _ => bail!("Unsupported virtual display implementation."),
+    #[cfg(windows)]
+    {
+        return match IDD_IMPL {
+            IDD_IMPL_RUSTDESK => rustdesk_idd::plug_in_headless(),
+            IDD_IMPL_AMYUNI => amyuni_idd::plug_in_headless(),
+            _ => bail!("Unsupported virtual display implementation."),
+        };
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return linux_evdi::plug_in_headless();
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        bail!("Virtual display not supported on this platform.")
     }
 }
 
 pub fn get_platform_additions() -> serde_json::Map<String, serde_json::Value> {
-    let mut map = serde_json::Map::new();
-    if !crate::platform::windows::is_self_service_running() {
+    #[cfg(windows)]
+    {
+        let mut map = serde_json::Map::new();
+        if !crate::platform::windows::is_self_service_running() {
+            return map;
+        }
+        map.insert("idd_impl".into(), serde_json::json!(IDD_IMPL));
+        match IDD_IMPL {
+            IDD_IMPL_RUSTDESK => {
+                let virtual_displays = rustdesk_idd::get_virtual_displays();
+                if !virtual_displays.is_empty() {
+                    map.insert(
+                        "rustdesk_virtual_displays".into(),
+                        serde_json::json!(virtual_displays),
+                    );
+                }
+            }
+            IDD_IMPL_AMYUNI => {
+                let c = amyuni_idd::get_monitor_count();
+                if c > 0 {
+                    map.insert("amyuni_virtual_displays".into(), serde_json::json!(c));
+                }
+            }
+            _ => {}
+        }
         return map;
     }
-    map.insert("idd_impl".into(), serde_json::json!(IDD_IMPL));
-    match IDD_IMPL {
-        IDD_IMPL_RUSTDESK => {
-            let virtual_displays = rustdesk_idd::get_virtual_displays();
-            if !virtual_displays.is_empty() {
-                map.insert(
-                    "rustdesk_virtual_displays".into(),
-                    serde_json::json!(virtual_displays),
-                );
-            }
-        }
-        IDD_IMPL_AMYUNI => {
-            let c = amyuni_idd::get_monitor_count();
-            if c > 0 {
-                map.insert("amyuni_virtual_displays".into(), serde_json::json!(c));
-            }
-        }
-        _ => {}
+    #[cfg(target_os = "linux")]
+    {
+        return linux_evdi::get_platform_additions();
     }
-    map
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        serde_json::Map::new()
+    }
 }
 
 #[inline]
-pub fn plug_in_monitor(idx: u32, modes: Vec<virtual_display::MonitorMode>) -> ResultType<()> {
-    match IDD_IMPL {
-        IDD_IMPL_RUSTDESK => rustdesk_idd::plug_in_index_modes(idx, modes),
-        IDD_IMPL_AMYUNI => amyuni_idd::plug_in_monitor(),
-        _ => bail!("Unsupported virtual display implementation."),
+pub fn plug_in_monitor(idx: u32, modes: Vec<MonitorMode>) -> ResultType<()> {
+    #[cfg(windows)]
+    {
+        let vd_modes: Vec<virtual_display::MonitorMode> = modes
+            .into_iter()
+            .map(|m| virtual_display::MonitorMode {
+                width: m.width as _,
+                height: m.height as _,
+                sync: m.sync as _,
+            })
+            .collect();
+        return match IDD_IMPL {
+            IDD_IMPL_RUSTDESK => rustdesk_idd::plug_in_index_modes(idx, vd_modes),
+            IDD_IMPL_AMYUNI => amyuni_idd::plug_in_monitor(),
+            _ => bail!("Unsupported virtual display implementation."),
+        };
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return linux_evdi::plug_in_monitor(idx, &modes);
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = (idx, modes);
+        bail!("Virtual display not supported on this platform.")
     }
 }
 
 pub fn plug_out_monitor(index: i32, force_all: bool, force_one: bool) -> ResultType<()> {
-    match IDD_IMPL {
-        IDD_IMPL_RUSTDESK => {
-            let indices = if index == IDD_PLUG_OUT_ALL_INDEX {
-                rustdesk_idd::get_virtual_displays()
-            } else {
-                vec![index as _]
-            };
-            rustdesk_idd::plug_out_peer_request(&indices)
-        }
-        IDD_IMPL_AMYUNI => amyuni_idd::plug_out_monitor(index, force_all, force_one),
-        _ => bail!("Unsupported virtual display implementation."),
+    #[cfg(windows)]
+    {
+        return match IDD_IMPL {
+            IDD_IMPL_RUSTDESK => {
+                let indices = if index == IDD_PLUG_OUT_ALL_INDEX {
+                    rustdesk_idd::get_virtual_displays()
+                } else {
+                    vec![index as _]
+                };
+                rustdesk_idd::plug_out_peer_request(&indices)
+            }
+            IDD_IMPL_AMYUNI => amyuni_idd::plug_out_monitor(index, force_all, force_one),
+            _ => bail!("Unsupported virtual display implementation."),
+        };
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (force_all, force_one);
+        return linux_evdi::plug_out_monitor(index);
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = (index, force_all, force_one);
+        bail!("Virtual display not supported on this platform.")
     }
 }
 
-pub fn plug_in_peer_request(modes: Vec<Vec<virtual_display::MonitorMode>>) -> ResultType<Vec<u32>> {
-    match IDD_IMPL {
-        IDD_IMPL_RUSTDESK => rustdesk_idd::plug_in_peer_request(modes),
-        IDD_IMPL_AMYUNI => {
-            amyuni_idd::plug_in_monitor()?;
-            Ok(vec![0])
-        }
-        _ => bail!("Unsupported virtual display implementation."),
+pub fn plug_in_peer_request(modes: Vec<Vec<MonitorMode>>) -> ResultType<Vec<u32>> {
+    #[cfg(windows)]
+    {
+        let vd_modes: Vec<Vec<virtual_display::MonitorMode>> = modes
+            .into_iter()
+            .map(|ms| {
+                ms.into_iter()
+                    .map(|m| virtual_display::MonitorMode {
+                        width: m.width as _,
+                        height: m.height as _,
+                        sync: m.sync as _,
+                    })
+                    .collect()
+            })
+            .collect();
+        return match IDD_IMPL {
+            IDD_IMPL_RUSTDESK => rustdesk_idd::plug_in_peer_request(vd_modes),
+            IDD_IMPL_AMYUNI => {
+                amyuni_idd::plug_in_monitor()?;
+                Ok(vec![0])
+            }
+            _ => bail!("Unsupported virtual display implementation."),
+        };
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return linux_evdi::plug_in_peer_request(modes);
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = modes;
+        bail!("Virtual display not supported on this platform.")
     }
 }
 
@@ -121,26 +223,55 @@ pub fn plug_out_monitor_indices(
     force_all: bool,
     force_one: bool,
 ) -> ResultType<()> {
-    match IDD_IMPL {
-        IDD_IMPL_RUSTDESK => rustdesk_idd::plug_out_peer_request(indices),
-        IDD_IMPL_AMYUNI => {
-            for _idx in indices.iter() {
-                amyuni_idd::plug_out_monitor(0, force_all, force_one)?;
+    #[cfg(windows)]
+    {
+        return match IDD_IMPL {
+            IDD_IMPL_RUSTDESK => rustdesk_idd::plug_out_peer_request(indices),
+            IDD_IMPL_AMYUNI => {
+                for _idx in indices.iter() {
+                    amyuni_idd::plug_out_monitor(0, force_all, force_one)?;
+                }
+                Ok(())
             }
-            Ok(())
-        }
-        _ => bail!("Unsupported virtual display implementation."),
+            _ => bail!("Unsupported virtual display implementation."),
+        };
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (force_all, force_one);
+        return linux_evdi::plug_out_monitor_indices(indices);
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = (indices, force_all, force_one);
+        bail!("Virtual display not supported on this platform.")
     }
 }
 
 pub fn reset_all() -> ResultType<()> {
-    match IDD_IMPL {
-        IDD_IMPL_RUSTDESK => rustdesk_idd::reset_all(),
-        IDD_IMPL_AMYUNI => amyuni_idd::reset_all(),
-        _ => bail!("Unsupported virtual display implementation."),
+    #[cfg(windows)]
+    {
+        return match IDD_IMPL {
+            IDD_IMPL_RUSTDESK => rustdesk_idd::reset_all(),
+            IDD_IMPL_AMYUNI => amyuni_idd::reset_all(),
+            _ => bail!("Unsupported virtual display implementation."),
+        };
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return linux_evdi::reset_all();
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        bail!("Virtual display not supported on this platform.")
     }
 }
 
+// =============================================================================
+// Windows IDD implementations
+// =============================================================================
+
+#[cfg(windows)]
 pub mod rustdesk_idd {
     use super::windows;
     use hbb_common::{allow_err, bail, lazy_static, log, ResultType};
@@ -394,6 +525,7 @@ pub mod rustdesk_idd {
     }
 }
 
+#[cfg(windows)]
 pub mod amyuni_idd {
     use super::windows;
     use crate::platform::{reg_display_settings, win_device};
@@ -427,12 +559,6 @@ pub mod amyuni_idd {
         static ref LAST_PLUG_IN_HEADLESS_TIME: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
     }
     const VIRTUAL_DISPLAY_MAX_COUNT: usize = 4;
-    // The count of virtual displays plugged in.
-    // This count is not accurate, because:
-    // 1. The virtual display driver may also be controlled by other processes.
-    // 2. RustDesk may crash and restart, but the virtual displays are kept.
-    //
-    // to-do: Maybe a better way is to add an option asking the user if plug out all virtual displays on disconnect.
     static VIRTUAL_DISPLAY_COUNT: atomic::AtomicUsize = atomic::AtomicUsize::new(0);
 
     fn get_deviceinstaller64_work_dir() -> ResultType<Option<Vec<u8>>> {
@@ -462,7 +588,6 @@ pub mod amyuni_idd {
             if crate::platform::windows::is_x64() {
                 log::info!("Uninstalling driver by deviceinstaller64.exe");
                 install_if_x86_on_x64(&work_dir, "remove usbmmidd")?;
-                // Sleep some time to wait for the driver to be uninstalled.
                 std::thread::sleep(Duration::from_secs(2));
                 return Ok(());
             }
@@ -474,8 +599,6 @@ pub mod amyuni_idd {
         Ok(())
     }
 
-    // SetupDiCallClassInstaller() will always fail if current_exe() is built as x86 and running on x64.
-    // So we need to call another x64 version exe to install and uninstall the driver.
     fn install_if_x86_on_x64(work_dir: &[u8], args: &str) -> ResultType<()> {
         const SW_HIDE: i32 = 0;
         let mut args = args.bytes().collect::<Vec<_>>();
@@ -499,8 +622,6 @@ pub mod amyuni_idd {
         Ok(())
     }
 
-    // If the driver is installed by "deviceinstaller64.exe", the driver will be installed asynchronously.
-    // The caller must wait some time before using the driver.
     fn check_install_driver(is_async: &mut bool) -> ResultType<()> {
         let _l = LOCK.lock().unwrap();
         let drivers = windows::get_display_drivers();
@@ -566,10 +687,7 @@ pub mod amyuni_idd {
                 std::thread::sleep(Duration::from_millis(30));
             }
         }
-        // No need to consider concurrency here.
         if add {
-            // If the monitor is plugged in, increase the count.
-            // Though there's already a check of `VIRTUAL_DISPLAY_MAX_COUNT`, it's still better to check here for double ensure.
             if VIRTUAL_DISPLAY_COUNT.load(atomic::Ordering::SeqCst) < VIRTUAL_DISPLAY_MAX_COUNT {
                 VIRTUAL_DISPLAY_COUNT.fetch_add(1, atomic::Ordering::SeqCst);
             }
@@ -581,8 +699,6 @@ pub mod amyuni_idd {
         Ok(())
     }
 
-    // `std::thread::sleep()` with a timeout is acceptable here.
-    // Because user can wait for a while to plug in a monitor.
     fn plug_in_monitor_(
         add: bool,
         is_driver_async_installed: bool,
@@ -613,7 +729,6 @@ pub mod amyuni_idd {
                 }
             }
         }
-        // Workaround for the issue that we can't set the default the resolution.
         if let Ok(old_connectivity_old) = reg_connectivity_old {
             std::thread::spawn(move || {
                 try_reset_resolution_on_first_plug_in(old_connectivity_old.len(), width, height);
@@ -632,7 +747,6 @@ pub mod amyuni_idd {
             std::thread::sleep(Duration::from_millis(300));
             if let Ok(reg_connectivity_new) = reg_display_settings::read_reg_connectivity() {
                 if reg_connectivity_new.len() != old_connectivity_len {
-                    // Use default resolution for Amyuni fallback
                     let (w, h) = (width, height);
                     log::info!(
                         "Amyuni: applying resolution {}x{} to virtual display(s)",
@@ -682,7 +796,6 @@ pub mod amyuni_idd {
 
         let resolution = format!("{},{}", w, h);
 
-        // Check if this resolution already exists
         let mut max_index: i32 = -1;
         for i in 0..20 {
             let name = i.to_string();
@@ -701,7 +814,6 @@ pub mod amyuni_idd {
             }
         }
 
-        // Add at next available index
         let new_index = (max_index + 1).to_string();
         key.set_value(&new_index, &resolution)?;
         log::info!(
@@ -723,10 +835,8 @@ pub mod amyuni_idd {
             bail!("There are already {VIRTUAL_DISPLAY_MAX_COUNT} monitors plugged in.");
         }
 
-        // Get custom resolution if set, otherwise default to 1920x1080
         let (w, h) = super::take_custom_resolution().unwrap_or((1920, 1080));
 
-        // Add custom resolution to Amyuni registry so the driver supports it
         if let Err(e) = update_amyuni_registry_resolution(w, h) {
             log::warn!(
                 "Failed to update Amyuni registry with resolution {}x{}: {}",
@@ -737,22 +847,8 @@ pub mod amyuni_idd {
         plug_in_monitor_(true, is_async, None, w as usize, h as usize)
     }
 
-    // `index` the display index to plug out. -1 means plug out all.
-    // `force_all` is used to forcibly plug out all virtual displays.
-    // `force_one` is used to forcibly plug out one virtual display managed by other processes
-    //             if there're no virtual displays managed by RustDesk.
     pub fn plug_out_monitor(index: i32, force_all: bool, force_one: bool) -> ResultType<()> {
         let plug_out_all = index == super::IDD_PLUG_OUT_ALL_INDEX;
-        // If `plug_out_all and force_all` is true, forcibly plug out all virtual displays.
-        // Though the driver may be controlled by other processes,
-        // we still forcibly plug out all virtual displays.
-        //
-        // 1. RustDesk plug in 2 virtual displays. (RustDesk)
-        // 2. Other process plug out all virtual displays. (User manually)
-        // 3. Other process plug in 1 virtual display. (User manually)
-        // 4. RustDesk plug out all virtual displays in this call. (RustDesk disconnect)
-        //
-        // This is not a normal scenario, RustDesk will plug out virtual display unexpectedly.
         let mut plug_in_count = VIRTUAL_DISPLAY_COUNT.load(atomic::Ordering::Relaxed);
         let amyuni_count = get_monitor_count();
         if !plug_out_all {
@@ -763,8 +859,6 @@ pub mod amyuni_idd {
                     bail!("The virtual display is managed by other processes.");
                 }
             }
-        } else {
-            // Ignore the message if trying to plug out all virtual displays.
         }
 
         let all_count = windows::get_device_names(None).len();
@@ -816,6 +910,7 @@ pub mod amyuni_idd {
     }
 }
 
+#[cfg(windows)]
 mod windows {
     use std::ptr::null_mut;
     use winapi::{
@@ -945,7 +1040,6 @@ mod windows {
             let mut data_type: DWORD = 0;
             let mut required_size: DWORD = 0;
 
-            // Get the required buffer size for the driver description
             let mut buffer;
             unsafe {
                 SetupDiGetDeviceRegistryPropertyW(
@@ -978,7 +1072,6 @@ mod windows {
 
             let mut status: ULONG = 0;
             let mut problem_number: ULONG = 0;
-            // Get the device status and problem number
             let config_ret = unsafe {
                 CM_Get_DevNode_Status(
                     &mut status,
@@ -1000,5 +1093,584 @@ mod windows {
         }
 
         display_drivers
+    }
+}
+
+// =============================================================================
+// Linux EVDI implementation
+// =============================================================================
+
+#[cfg(target_os = "linux")]
+pub mod linux_evdi {
+    use hbb_common::{bail, log, ResultType};
+    use std::collections::HashMap;
+    use std::ffi::CStr;
+    use std::os::raw::{c_int, c_uint, c_void};
+    use std::sync::{Arc, Mutex};
+
+    type EvdiHandle = *mut c_void;
+
+    // FFI function types for libevdi
+    type FnEvdiCheckDevice = unsafe extern "C" fn(device: c_int) -> c_int;
+    type FnEvdiAddDevice = unsafe extern "C" fn() -> c_int;
+    type FnEvdiOpen = unsafe extern "C" fn(device: c_int) -> EvdiHandle;
+    type FnEvdiClose = unsafe extern "C" fn(handle: EvdiHandle);
+    type FnEvdiConnect = unsafe extern "C" fn(
+        handle: EvdiHandle,
+        edid: *const u8,
+        edid_length: c_uint,
+        sku_area_limit: u32,
+    );
+    type FnEvdiDisconnect = unsafe extern "C" fn(handle: EvdiHandle);
+
+    struct EvdiLib {
+        _lib_handle: *mut c_void,
+        check_device: FnEvdiCheckDevice,
+        add_device: FnEvdiAddDevice,
+        open: FnEvdiOpen,
+        close: FnEvdiClose,
+        connect: FnEvdiConnect,
+        disconnect: FnEvdiDisconnect,
+    }
+
+    // Safety: EvdiLib contains function pointers and an opaque library handle.
+    // All access is synchronized through the MANAGER mutex.
+    unsafe impl Send for EvdiLib {}
+
+    impl EvdiLib {
+        fn load() -> Option<Self> {
+            unsafe {
+                // Try libevdi.so.0 first, then libevdi.so
+                let lib = hbb_common::libc::dlopen(
+                    b"libevdi.so.0\0".as_ptr() as *const hbb_common::libc::c_char,
+                    hbb_common::libc::RTLD_NOW,
+                );
+                let lib = if lib.is_null() {
+                    let lib = hbb_common::libc::dlopen(
+                        b"libevdi.so\0".as_ptr() as *const hbb_common::libc::c_char,
+                        hbb_common::libc::RTLD_NOW,
+                    );
+                    if lib.is_null() {
+                        log::info!("EVDI: libevdi.so not found: {}", get_dl_error());
+                        return None;
+                    }
+                    lib
+                } else {
+                    lib
+                };
+
+                macro_rules! load_sym {
+                    ($lib:expr, $name:expr, $type:ty) => {{
+                        let sym = hbb_common::libc::dlsym(
+                            $lib,
+                            concat!($name, "\0").as_ptr() as *const hbb_common::libc::c_char,
+                        );
+                        if sym.is_null() {
+                            log::warn!("EVDI: failed to load symbol {}: {}", $name, get_dl_error());
+                            hbb_common::libc::dlclose($lib);
+                            return None;
+                        }
+                        std::mem::transmute::<*mut c_void, $type>(sym)
+                    }};
+                }
+
+                let check_device = load_sym!(lib, "evdi_check_device", FnEvdiCheckDevice);
+                let add_device = load_sym!(lib, "evdi_add_device", FnEvdiAddDevice);
+                let open = load_sym!(lib, "evdi_open", FnEvdiOpen);
+                let close = load_sym!(lib, "evdi_close", FnEvdiClose);
+                let connect = load_sym!(lib, "evdi_connect", FnEvdiConnect);
+                let disconnect = load_sym!(lib, "evdi_disconnect", FnEvdiDisconnect);
+
+                log::info!("EVDI: libevdi loaded successfully");
+                Some(Self {
+                    _lib_handle: lib,
+                    check_device,
+                    add_device,
+                    open,
+                    close,
+                    connect,
+                    disconnect,
+                })
+            }
+        }
+    }
+
+    impl Drop for EvdiLib {
+        fn drop(&mut self) {
+            unsafe {
+                hbb_common::libc::dlclose(self._lib_handle);
+            }
+        }
+    }
+
+    fn get_dl_error() -> String {
+        unsafe {
+            let err = hbb_common::libc::dlerror();
+            if err.is_null() {
+                "unknown error".to_string()
+            } else {
+                CStr::from_ptr(err).to_string_lossy().into_owned()
+            }
+        }
+    }
+
+    struct EvdiDevice {
+        handle: EvdiHandle,
+        device_id: i32,
+    }
+
+    // Safety: EvdiDevice contains an opaque handle pointer.
+    // All access is synchronized through the MANAGER mutex.
+    unsafe impl Send for EvdiDevice {}
+
+    impl EvdiDevice {
+        fn disconnect_and_close_fns(
+            &self,
+            disconnect_fn: FnEvdiDisconnect,
+            close_fn: FnEvdiClose,
+        ) {
+            unsafe {
+                (disconnect_fn)(self.handle);
+                (close_fn)(self.handle);
+            }
+            log::info!("EVDI: device {} disconnected and closed", self.device_id);
+        }
+    }
+
+    struct VirtualDisplayManager {
+        lib: Option<EvdiLib>,
+        headless: Option<EvdiDevice>,
+        peers: HashMap<u32, EvdiDevice>,
+        next_peer_index: u32,
+    }
+
+    impl Default for VirtualDisplayManager {
+        fn default() -> Self {
+            Self {
+                lib: EvdiLib::load(),
+                headless: None,
+                peers: HashMap::new(),
+                next_peer_index: 1,
+            }
+        }
+    }
+
+    lazy_static::lazy_static! {
+        static ref MANAGER: Arc<Mutex<VirtualDisplayManager>> =
+            Arc::new(Mutex::new(VirtualDisplayManager::default()));
+    }
+
+    pub fn is_supported() -> bool {
+        // Check if kernel module is loaded AND libevdi is available
+        let module_loaded = std::path::Path::new("/sys/module/evdi").exists();
+        let lib_available = MANAGER.lock().unwrap().lib.is_some();
+        if lib_available && !module_loaded {
+            log::info!("EVDI: libevdi found but kernel module not loaded (try: sudo modprobe evdi)");
+        }
+        lib_available && module_loaded
+    }
+
+    pub fn plug_in_headless() -> ResultType<()> {
+        let mut manager = MANAGER.lock().unwrap();
+        let lib = manager
+            .lib
+            .as_ref()
+            .ok_or_else(|| hbb_common::anyhow::anyhow!("EVDI library not loaded"))?;
+        let add_device_fn = lib.add_device;
+        let open_fn = lib.open;
+        let connect_fn = lib.connect;
+
+        if manager.headless.is_some() {
+            log::debug!("EVDI: headless display already exists");
+            return Ok(());
+        }
+
+        // Add a new EVDI device
+        let device_id = unsafe { (add_device_fn)() };
+        if device_id < 0 {
+            bail!("EVDI: failed to add device (requires root/video group permissions)");
+        }
+
+        // Open the device
+        let handle = unsafe { (open_fn)(device_id) };
+        if handle.is_null() {
+            bail!("EVDI: failed to open device {}", device_id);
+        }
+
+        // Generate EDID for 1920x1080@60Hz and connect
+        let edid = generate_edid(1920, 1080, 60);
+        let area_limit = 1920u32 * 1080u32;
+
+        unsafe {
+            (connect_fn)(handle, edid.as_ptr(), edid.len() as c_uint, area_limit);
+        }
+
+        log::info!(
+            "EVDI: headless virtual display created (device {}, 1920x1080@60Hz)",
+            device_id
+        );
+        manager.headless = Some(EvdiDevice { handle, device_id });
+
+        Ok(())
+    }
+
+    pub fn plug_in_monitor(idx: u32, modes: &[super::MonitorMode]) -> ResultType<()> {
+        let mut manager = MANAGER.lock().unwrap();
+        let lib = manager
+            .lib
+            .as_ref()
+            .ok_or_else(|| hbb_common::anyhow::anyhow!("EVDI library not loaded"))?;
+        let add_device_fn = lib.add_device;
+        let open_fn = lib.open;
+        let connect_fn = lib.connect;
+
+        if manager.peers.contains_key(&idx) {
+            return Ok(());
+        }
+
+        let (width, height, refresh) = if let Some(m) = modes.first() {
+            (m.width, m.height, m.sync)
+        } else {
+            (1920, 1080, 60)
+        };
+
+        let device_id = unsafe { (add_device_fn)() };
+        if device_id < 0 {
+            bail!("EVDI: failed to add device");
+        }
+
+        let handle = unsafe { (open_fn)(device_id) };
+        if handle.is_null() {
+            bail!("EVDI: failed to open device {}", device_id);
+        }
+
+        let edid = generate_edid(width, height, refresh);
+        let area_limit = width * height;
+
+        unsafe {
+            (connect_fn)(handle, edid.as_ptr(), edid.len() as c_uint, area_limit);
+        }
+
+        log::info!(
+            "EVDI: virtual display {} created (device {}, {}x{}@{}Hz)",
+            idx,
+            device_id,
+            width,
+            height,
+            refresh
+        );
+        manager.peers.insert(idx, EvdiDevice { handle, device_id });
+
+        Ok(())
+    }
+
+    pub fn plug_in_peer_request(
+        modes: Vec<Vec<super::MonitorMode>>,
+    ) -> ResultType<Vec<u32>> {
+        let mut manager = MANAGER.lock().unwrap();
+        let lib = manager
+            .lib
+            .as_ref()
+            .ok_or_else(|| hbb_common::anyhow::anyhow!("EVDI library not loaded"))?;
+        // Copy function pointers to avoid borrow conflict with manager mutation
+        let add_device_fn = lib.add_device;
+        let open_fn = lib.open;
+        let connect_fn = lib.connect;
+
+        let mut indices = Vec::new();
+
+        for mode_set in &modes {
+            // Find next available index
+            let mut idx = manager.next_peer_index;
+            while manager.peers.contains_key(&idx) {
+                idx += 1;
+            }
+
+            let (width, height, refresh) = if let Some(m) = mode_set.first() {
+                (m.width, m.height, m.sync)
+            } else {
+                (1920, 1080, 60)
+            };
+
+            let device_id = unsafe { (add_device_fn)() };
+            if device_id < 0 {
+                log::error!("EVDI: failed to add device for peer index {}", idx);
+                continue;
+            }
+
+            let handle = unsafe { (open_fn)(device_id) };
+            if handle.is_null() {
+                log::error!(
+                    "EVDI: failed to open device {} for peer index {}",
+                    device_id,
+                    idx
+                );
+                continue;
+            }
+
+            let edid = generate_edid(width, height, refresh);
+            let area_limit = width * height;
+
+            unsafe {
+                (connect_fn)(handle, edid.as_ptr(), edid.len() as c_uint, area_limit);
+            }
+
+            log::info!(
+                "EVDI: peer virtual display {} created (device {}, {}x{}@{}Hz)",
+                idx,
+                device_id,
+                width,
+                height,
+                refresh
+            );
+            manager.peers.insert(idx, EvdiDevice { handle, device_id });
+            indices.push(idx);
+            manager.next_peer_index = idx + 1;
+        }
+
+        Ok(indices)
+    }
+
+    pub fn plug_out_monitor(index: i32) -> ResultType<()> {
+        let mut manager = MANAGER.lock().unwrap();
+        let lib = manager
+            .lib
+            .as_ref()
+            .ok_or_else(|| hbb_common::anyhow::anyhow!("EVDI library not loaded"))?;
+        // Copy function pointers to avoid borrow conflict
+        let disconnect_fn = lib.disconnect;
+        let close_fn = lib.close;
+
+        if index < 0 {
+            // Plug out all
+            let devices: Vec<EvdiDevice> = manager.peers.drain().map(|(_, d)| d).collect();
+            for device in devices {
+                device.disconnect_and_close_fns(disconnect_fn, close_fn);
+            }
+            if let Some(headless) = manager.headless.take() {
+                headless.disconnect_and_close_fns(disconnect_fn, close_fn);
+            }
+        } else {
+            let idx = index as u32;
+            if let Some(device) = manager.peers.remove(&idx) {
+                device.disconnect_and_close_fns(disconnect_fn, close_fn);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn plug_out_monitor_indices(indices: &[u32]) -> ResultType<()> {
+        let mut manager = MANAGER.lock().unwrap();
+        let lib = manager
+            .lib
+            .as_ref()
+            .ok_or_else(|| hbb_common::anyhow::anyhow!("EVDI library not loaded"))?;
+        let disconnect_fn = lib.disconnect;
+        let close_fn = lib.close;
+
+        for &idx in indices {
+            if let Some(device) = manager.peers.remove(&idx) {
+                device.disconnect_and_close_fns(disconnect_fn, close_fn);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn reset_all() -> ResultType<()> {
+        let mut manager = MANAGER.lock().unwrap();
+        if let Some(lib) = &manager.lib {
+            let disconnect_fn = lib.disconnect;
+            let close_fn = lib.close;
+            let devices: Vec<EvdiDevice> = manager.peers.drain().map(|(_, d)| d).collect();
+            for device in devices {
+                device.disconnect_and_close_fns(disconnect_fn, close_fn);
+            }
+            if let Some(headless) = manager.headless.take() {
+                headless.disconnect_and_close_fns(disconnect_fn, close_fn);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn is_virtual_display(name: &str) -> bool {
+        // EVDI devices typically appear with connector names containing "EVDI"
+        let name_lower = name.to_lowercase();
+        name_lower.contains("evdi") || name_lower.contains("virtual")
+    }
+
+    pub fn get_virtual_displays() -> Vec<u32> {
+        let manager = MANAGER.lock().unwrap();
+        manager.peers.keys().cloned().collect()
+    }
+
+    pub fn get_platform_additions() -> serde_json::Map<String, serde_json::Value> {
+        let mut map = serde_json::Map::new();
+        let manager = MANAGER.lock().unwrap();
+        let vds: Vec<u32> = manager.peers.keys().cloned().collect();
+        if !vds.is_empty() {
+            map.insert(
+                "evdi_virtual_displays".into(),
+                serde_json::json!(vds),
+            );
+        }
+        if manager.headless.is_some() {
+            map.insert("evdi_headless".into(), serde_json::json!(true));
+        }
+        map
+    }
+
+    // =========================================================================
+    // EDID generation
+    // =========================================================================
+
+    /// Generate a valid 128-byte EDID for the given resolution.
+    /// Manufacturer ID: "RHZ" (Rust Horizon)
+    fn generate_edid(width: u32, height: u32, refresh: u32) -> [u8; 128] {
+        let mut edid = [0u8; 128];
+
+        // Header
+        edid[0..8].copy_from_slice(&[0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00]);
+
+        // Manufacturer ID "RHZ" (R=18, H=8, Z=26)
+        // Encoding: byte8 = 0|(R<<2)|(H>>3), byte9 = (H&7)<<5|Z
+        edid[8] = (18 << 2) | (8 >> 3); // 0x49
+        edid[9] = ((8 & 7) << 5) | 26; // 0x1A
+
+        // Product code
+        edid[10] = 0x01;
+        edid[11] = 0x00;
+
+        // Serial number
+        edid[12] = 0x01;
+
+        // Week/year of manufacture
+        edid[16] = 0x01; // week 1
+        edid[17] = 0x22; // year 2024 (1990 + 34)
+
+        // EDID version 1.3
+        edid[18] = 0x01;
+        edid[19] = 0x03;
+
+        // Basic display parameters
+        edid[20] = 0x80; // Digital input
+        // Screen size in cm (approximate for ~96 DPI)
+        edid[21] = ((width as u64 * 254) / (96 * 100)).max(1).min(255) as u8;
+        edid[22] = ((height as u64 * 254) / (96 * 100)).max(1).min(255) as u8;
+        edid[23] = 0x78; // Gamma 2.2
+        edid[24] = 0x0A; // RGB color, preferred timing in DTD1
+
+        // Standard timings (bytes 38-53): all unused (0x01 0x01)
+        for i in (38..54).step_by(2) {
+            edid[i] = 0x01;
+            edid[i + 1] = 0x01;
+        }
+
+        // DTD 1 (bytes 54-71): preferred timing descriptor
+        write_dtd(&mut edid[54..72], width, height, refresh);
+
+        // Display descriptor 2 (bytes 72-89): Monitor name
+        edid[72] = 0x00;
+        edid[73] = 0x00;
+        edid[74] = 0x00;
+        edid[75] = 0xFC; // Monitor name tag
+        edid[76] = 0x00;
+        edid[77..90].copy_from_slice(b"RustHorizon\n ");
+
+        // Display descriptor 3 (bytes 90-107): Monitor range limits
+        edid[90] = 0x00;
+        edid[91] = 0x00;
+        edid[92] = 0x00;
+        edid[93] = 0xFD; // Range limits tag
+        edid[94] = 0x00;
+        edid[95] = refresh.saturating_sub(10).max(1) as u8; // min V freq
+        edid[96] = (refresh + 10).min(255) as u8; // max V freq
+        edid[97] = 0x1E; // min H freq: 30 kHz
+        edid[98] = 0x50; // max H freq: 80 kHz
+        // Max pixel clock in 10 MHz units
+        let pixel_clock_hz = estimate_pixel_clock(width, height, refresh);
+        edid[99] = ((pixel_clock_hz / 10_000_000) + 1).min(255) as u8;
+        edid[100] = 0x0A; // GTF secondary curve
+        for i in 101..108 {
+            edid[i] = 0x20; // padding
+        }
+
+        // Display descriptor 4 (bytes 108-125): Dummy descriptor
+        edid[108] = 0x00;
+        edid[109] = 0x00;
+        edid[110] = 0x00;
+        edid[111] = 0x10; // Dummy tag
+        edid[112] = 0x00;
+
+        // Extension count
+        edid[126] = 0x00;
+
+        // Checksum: all 128 bytes must sum to 0 mod 256
+        let sum: u32 = edid[..127].iter().map(|&b| b as u32).sum();
+        edid[127] = ((256 - (sum % 256)) % 256) as u8;
+
+        edid
+    }
+
+    /// Write a Detailed Timing Descriptor (18 bytes) for the given resolution.
+    fn write_dtd(buf: &mut [u8], width: u32, height: u32, refresh: u32) {
+        // Blanking intervals (standard values for common resolutions)
+        let (h_blank, h_front_porch, h_sync) = match width {
+            w if w <= 1920 => (280u32, 88u32, 44u32),
+            w if w <= 2560 => (160, 48, 32),
+            _ => (560, 176, 88),
+        };
+        let (v_blank, v_front_porch, v_sync) = match height {
+            h if h <= 1080 => (45u32, 4u32, 5u32),
+            h if h <= 1440 => (41, 3, 5),
+            _ => (90, 8, 10),
+        };
+
+        let h_total = width + h_blank;
+        let v_total = height + v_blank;
+        let pixel_clock_10khz = (h_total as u64 * v_total as u64 * refresh as u64) / 10_000;
+
+        buf[0] = (pixel_clock_10khz & 0xFF) as u8;
+        buf[1] = ((pixel_clock_10khz >> 8) & 0xFF) as u8;
+        buf[2] = (width & 0xFF) as u8;
+        buf[3] = (h_blank & 0xFF) as u8;
+        buf[4] = ((((width >> 8) & 0xF) << 4) | ((h_blank >> 8) & 0xF)) as u8;
+        buf[5] = (height & 0xFF) as u8;
+        buf[6] = (v_blank & 0xFF) as u8;
+        buf[7] = ((((height >> 8) & 0xF) << 4) | ((v_blank >> 8) & 0xF)) as u8;
+        buf[8] = (h_front_porch & 0xFF) as u8;
+        buf[9] = (h_sync & 0xFF) as u8;
+        buf[10] = (((v_front_porch & 0xF) << 4) | (v_sync & 0xF)) as u8;
+        buf[11] = ((((h_front_porch >> 8) & 0x3) << 6)
+            | (((h_sync >> 8) & 0x3) << 4)
+            | (((v_front_porch >> 4) & 0x3) << 2)
+            | ((v_sync >> 4) & 0x3)) as u8;
+
+        // Image size in mm (approximate for ~96 DPI)
+        let h_mm = (width as u64 * 254) / 960;
+        let v_mm = (height as u64 * 254) / 960;
+        buf[12] = (h_mm & 0xFF) as u8;
+        buf[13] = (v_mm & 0xFF) as u8;
+        buf[14] = ((((h_mm >> 8) & 0xF) << 4) | ((v_mm >> 8) & 0xF)) as u8;
+
+        buf[15] = 0; // H border
+        buf[16] = 0; // V border
+        buf[17] = 0x1E; // Non-interlaced, normal, digital separate, +H+V sync
+    }
+
+    fn estimate_pixel_clock(width: u32, height: u32, refresh: u32) -> u32 {
+        let h_blank: u32 = match width {
+            w if w <= 1920 => 280,
+            w if w <= 2560 => 160,
+            _ => 560,
+        };
+        let v_blank: u32 = match height {
+            h if h <= 1080 => 45,
+            h if h <= 1440 => 41,
+            _ => 90,
+        };
+        ((width + h_blank) as u64 * (height + v_blank) as u64 * refresh as u64)
+            .min(u32::MAX as u64) as u32
     }
 }
