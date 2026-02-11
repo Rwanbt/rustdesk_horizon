@@ -1507,6 +1507,7 @@ impl Connection {
         if !platform_additions.is_empty() {
             pi.platform_additions = serde_json::to_string(&platform_additions).unwrap_or("".into());
         }
+        log::info!("PeerInfo: platform={}, platform_additions={}", pi.platform, pi.platform_additions);
 
         if self.port_forward_socket.is_some() {
             let mut msg_out = Message::new();

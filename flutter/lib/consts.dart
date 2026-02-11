@@ -25,6 +25,8 @@ const String kPlatformAdditionsRustDeskVirtualDisplays =
     "rustdesk_virtual_displays";
 const String kPlatformAdditionsAmyuniVirtualDisplays =
     "amyuni_virtual_displays";
+const String kPlatformAdditionsEvdiVirtualDisplays =
+    "evdi_virtual_displays";
 const String kPlatformAdditionsHasFileClipboard = "has_file_clipboard";
 const String kPlatformAdditionsSupportedPrivacyModeImpl =
     "supported_privacy_mode_impl";

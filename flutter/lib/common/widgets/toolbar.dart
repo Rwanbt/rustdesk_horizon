@@ -935,8 +935,11 @@ Future<void> toggleVirtualDisplayWithResolution({
 }) async {
   if (on && (isAndroid || isIOS)) {
     final physicalSize = ui.window.physicalSize;
-    final w = physicalSize.width.toInt();
-    final h = physicalSize.height.toInt();
+    final pw = physicalSize.width.toInt();
+    final ph = physicalSize.height.toInt();
+    // Force landscape: use the larger dimension as width
+    final w = pw > ph ? pw : ph;
+    final h = pw > ph ? ph : pw;
     if (w > 0 && h > 0) {
       bind.sessionSendChat(sessionId: sessionId, text: "#vd_res ${w}x$h");
       await Future.delayed(const Duration(milliseconds: 150));
@@ -946,13 +949,19 @@ Future<void> toggleVirtualDisplayWithResolution({
 }
 
 bool showVirtualDisplayMenu(FFI ffi) {
-  if (ffi.ffiModel.pi.platform != kPeerPlatformWindows) {
+  final pi = ffi.ffiModel.pi;
+  // Linux with EVDI
+  if (pi.platform == kPeerPlatformLinux && pi.isEvdi) {
+    return true;
+  }
+  // Windows with IDD
+  if (pi.platform != kPeerPlatformWindows) {
     return false;
   }
-  if (!ffi.ffiModel.pi.isInstalled) {
+  if (!pi.isInstalled) {
     return false;
   }
-  if (ffi.ffiModel.pi.isRustDeskIdd || ffi.ffiModel.pi.isAmyuniIdd) {
+  if (pi.isRustDeskIdd || pi.isAmyuniIdd) {
     return true;
   }
   return false;
@@ -965,6 +974,65 @@ List<Widget> getVirtualDisplayMenuChildren(
   }
   final pi = ffi.ffiModel.pi;
   final privacyModeState = PrivacyModeState.find(id);
+  if (pi.isEvdi) {
+    final count = ffi.ffiModel.pi.evdiVirtualDisplayCount;
+    final children = <Widget>[
+      Obx(() => Row(
+            children: [
+              TextButton(
+                onPressed: privacyModeState.isNotEmpty || count == 0
+                    ? null
+                    : () {
+                        bind.sessionToggleVirtualDisplay(
+                            sessionId: ffi.sessionId, index: 0, on: false);
+                        clickCallBack?.call();
+                      },
+                child: Icon(Icons.remove),
+              ),
+              Text(count.toString()),
+              TextButton(
+                onPressed: privacyModeState.isNotEmpty || count == kMaxVirtualDisplayCount
+                    ? null
+                    : () async {
+                        await toggleVirtualDisplayWithResolution(
+                            sessionId: ffi.sessionId, index: 0, on: true);
+                        clickCallBack?.call();
+                      },
+                child: Icon(Icons.add),
+              ),
+            ],
+          )),
+      Divider(),
+      Obx(() => MenuButton(
+            onPressed: privacyModeState.isNotEmpty || count == 0
+                ? null
+                : () {
+                    bind.sessionToggleVirtualDisplay(
+                        sessionId: ffi.sessionId,
+                        index: kAllVirtualDisplay,
+                        on: false);
+                    clickCallBack?.call();
+                  },
+            ffi: ffi,
+            child: Text(translate('Plug out all')),
+          )),
+      Divider(),
+      CkbMenuButton(
+        value: bind.sessionGetToggleOptionSync(
+            sessionId: ffi.sessionId, arg: kOptionAutoVirtualDisplay),
+        onChanged: (bool? value) {
+          if (value != null) {
+            bind.sessionToggleOption(
+                sessionId: ffi.sessionId, value: kOptionAutoVirtualDisplay);
+            clickCallBack?.call();
+          }
+        },
+        child: Text(translate('Auto virtual display on connect')),
+        ffi: ffi,
+      ),
+    ];
+    return children;
+  }
   if (pi.isRustDeskIdd) {
     final virtualDisplays = ffi.ffiModel.pi.RustDeskVirtualDisplays;
     final children = <Widget>[];

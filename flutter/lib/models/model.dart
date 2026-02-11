@@ -1634,6 +1634,7 @@ class FfiModel with ChangeNotifier {
     if (updateData.isEmpty) {
       _pi.platformAdditions.remove(kPlatformAdditionsRustDeskVirtualDisplays);
       _pi.platformAdditions.remove(kPlatformAdditionsAmyuniVirtualDisplays);
+      _pi.platformAdditions.remove(kPlatformAdditionsEvdiVirtualDisplays);
     } else {
       try {
         final updateJson = json.decode(updateData) as Map<String, dynamic>;
@@ -1647,6 +1648,9 @@ class FfiModel with ChangeNotifier {
         }
         if (!updateJson.containsKey(kPlatformAdditionsAmyuniVirtualDisplays)) {
           _pi.platformAdditions.remove(kPlatformAdditionsAmyuniVirtualDisplays);
+        }
+        if (!updateJson.containsKey(kPlatformAdditionsEvdiVirtualDisplays)) {
+          _pi.platformAdditions.remove(kPlatformAdditionsEvdiVirtualDisplays);
         }
       } catch (e) {
         debugPrint('Failed to decode platformAdditions $e');
@@ -4001,6 +4005,10 @@ class PeerInfo with ChangeNotifier {
       platformAdditions[kPlatformAdditionsIddImpl] == 'rustdesk_idd';
   bool get isAmyuniIdd =>
       platformAdditions[kPlatformAdditionsIddImpl] == 'amyuni_idd';
+  bool get isEvdi =>
+      platformAdditions[kPlatformAdditionsIddImpl] == 'evdi';
+  int get evdiVirtualDisplayCount =>
+      platformAdditions[kPlatformAdditionsEvdiVirtualDisplays] ?? 0;
 
   Display? tryGetDisplay({int? display}) {
     if (displays.isEmpty) {
