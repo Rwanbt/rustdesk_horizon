@@ -299,7 +299,7 @@ Version: %s
 Architecture: %s
 Maintainer: rustdesk <info@rustdesk.com>
 Homepage: https://rustdesk.com
-Depends: libgtk-3-0, libxcb-randr0, libxdo3, libxfixes3, libxcb-shape0, libxcb-xfixes0, libasound2, libsystemd0, curl, libva2, libva-drm2, libva-x11-2, libgstreamer-plugins-base1.0-0, libpam0g, gstreamer1.0-pipewire%s
+Depends: libgtk-3-0, libxcb-randr0, libxdo3, libxfixes3, libxcb-shape0, libxcb-xfixes0, libasound2, libsystemd0, curl, libva2, libva-drm2, libva-x11-2, libgstreamer-plugins-base1.0-0, libpam0g, gstreamer1.0-pipewire, evdi-dkms, libevdi1%s
 Recommends: libayatana-appindicator3-1
 Description: A remote control software.
 
@@ -321,44 +321,52 @@ def build_flutter_deb(version, features):
         ffi_bindgen_function_refactor()
     os.chdir('flutter')
     system2('flutter build linux --release')
-    system2('mkdir -p tmpdeb/usr/bin/')
-    system2('mkdir -p tmpdeb/usr/share/rustdesk')
-    system2('mkdir -p tmpdeb/etc/rustdesk/')
-    system2('mkdir -p tmpdeb/etc/pam.d/')
-    system2('mkdir -p tmpdeb/usr/share/rustdesk/files/systemd/')
-    system2('mkdir -p tmpdeb/usr/share/icons/hicolor/256x256/apps/')
-    system2('mkdir -p tmpdeb/usr/share/icons/hicolor/scalable/apps/')
-    system2('mkdir -p tmpdeb/usr/share/applications/')
-    system2('mkdir -p tmpdeb/usr/share/polkit-1/actions')
-    system2('rm tmpdeb/usr/bin/rustdesk || true')
+    # Build deb in /tmp to avoid NTFS permission issues with dpkg-deb
+    tmpdeb = '/tmp/tmpdeb-rustdesk'
+    system2(f'/bin/rm -rf {tmpdeb}')
+    system2(f'mkdir -p {tmpdeb}/usr/bin/')
+    system2(f'mkdir -p {tmpdeb}/usr/share/rustdesk')
+    system2(f'mkdir -p {tmpdeb}/etc/rustdesk/')
+    system2(f'mkdir -p {tmpdeb}/etc/pam.d/')
+    system2(f'mkdir -p {tmpdeb}/usr/share/rustdesk/files/systemd/')
+    system2(f'mkdir -p {tmpdeb}/usr/share/icons/hicolor/256x256/apps/')
+    system2(f'mkdir -p {tmpdeb}/usr/share/icons/hicolor/scalable/apps/')
+    system2(f'mkdir -p {tmpdeb}/usr/share/applications/')
+    system2(f'mkdir -p {tmpdeb}/usr/share/polkit-1/actions')
+    system2(f'rm {tmpdeb}/usr/bin/rustdesk || true')
     system2(
-        f'cp -r {flutter_build_dir}/* tmpdeb/usr/share/rustdesk/')
+        f'cp -r {flutter_build_dir}/* {tmpdeb}/usr/share/rustdesk/')
     system2(
-        'cp ../res/rustdesk.service tmpdeb/usr/share/rustdesk/files/systemd/')
+        f'cp ../res/rustdesk.service {tmpdeb}/usr/share/rustdesk/files/systemd/')
     system2(
-        'cp ../res/128x128@2x.png tmpdeb/usr/share/icons/hicolor/256x256/apps/rustdesk.png')
+        f'cp ../res/128x128@2x.png {tmpdeb}/usr/share/icons/hicolor/256x256/apps/rustdesk.png')
     system2(
-        'cp ../res/scalable.svg tmpdeb/usr/share/icons/hicolor/scalable/apps/rustdesk.svg')
+        f'cp ../res/scalable.svg {tmpdeb}/usr/share/icons/hicolor/scalable/apps/rustdesk.svg')
     system2(
-        'cp ../res/rustdesk.desktop tmpdeb/usr/share/applications/rustdesk.desktop')
+        f'cp ../res/rustdesk.desktop {tmpdeb}/usr/share/applications/rustdesk.desktop')
     system2(
-        'cp ../res/rustdesk-link.desktop tmpdeb/usr/share/applications/rustdesk-link.desktop')
+        f'cp ../res/rustdesk-link.desktop {tmpdeb}/usr/share/applications/rustdesk-link.desktop')
     system2(
-        'cp ../res/startwm.sh tmpdeb/etc/rustdesk/')
+        f'cp ../res/startwm.sh {tmpdeb}/etc/rustdesk/')
     system2(
-        'cp ../res/xorg.conf tmpdeb/etc/rustdesk/')
+        f'cp ../res/xorg.conf {tmpdeb}/etc/rustdesk/')
     system2(
-        'cp ../res/pam.d/rustdesk.debian tmpdeb/etc/pam.d/rustdesk')
+        f'cp ../res/pam.d/rustdesk.debian {tmpdeb}/etc/pam.d/rustdesk')
     system2(
-        "echo \"#!/bin/sh\" >> tmpdeb/usr/share/rustdesk/files/polkit && chmod a+x tmpdeb/usr/share/rustdesk/files/polkit")
+        f"echo \"#!/bin/sh\" >> {tmpdeb}/usr/share/rustdesk/files/polkit && chmod a+x {tmpdeb}/usr/share/rustdesk/files/polkit")
 
-    system2('mkdir -p tmpdeb/DEBIAN')
+    system2(f'mkdir -p {tmpdeb}/DEBIAN')
     generate_control_file(version)
-    system2('cp -a ../res/DEBIAN/* tmpdeb/DEBIAN/')
-    md5_file_folder("tmpdeb/")
-    system2('dpkg-deb -b tmpdeb rustdesk.deb;')
+    system2(f'cp -a ../res/DEBIAN/* {tmpdeb}/DEBIAN/')
+    # Fix CRLF line endings from NTFS and permissions for dpkg-deb
+    system2(f'sed -i "s/\\r$//" {tmpdeb}/DEBIAN/*')
+    system2(f'chmod 0755 {tmpdeb}/DEBIAN')
+    system2(f'chmod 0644 {tmpdeb}/DEBIAN/control {tmpdeb}/DEBIAN/md5sums 2>/dev/null; true')
+    system2(f'chmod 0755 {tmpdeb}/DEBIAN/postinst {tmpdeb}/DEBIAN/postrm {tmpdeb}/DEBIAN/preinst {tmpdeb}/DEBIAN/prerm 2>/dev/null; true')
+    md5_file_folder(f"{tmpdeb}/")
+    system2(f'dpkg-deb -b {tmpdeb} rustdesk.deb;')
 
-    system2('/bin/rm -rf tmpdeb/')
+    system2(f'/bin/rm -rf {tmpdeb}')
     system2('/bin/rm -rf ../res/DEBIAN/control')
     os.rename('rustdesk.deb', '../rustdesk-%s.deb' % version)
     os.chdir("..")
@@ -392,6 +400,11 @@ def build_deb_from_folder(version, binary_folder):
     system2('mkdir -p tmpdeb/DEBIAN')
     generate_control_file(version)
     system2('cp -a ../res/DEBIAN/* tmpdeb/DEBIAN/')
+    # Fix CRLF line endings from NTFS and permissions for dpkg-deb
+    system2('sed -i "s/\\r$//" tmpdeb/DEBIAN/*')
+    system2('chmod 0755 tmpdeb/DEBIAN')
+    system2('chmod 0644 tmpdeb/DEBIAN/control tmpdeb/DEBIAN/md5sums 2>/dev/null; true')
+    system2('chmod 0755 tmpdeb/DEBIAN/postinst tmpdeb/DEBIAN/postrm tmpdeb/DEBIAN/preinst tmpdeb/DEBIAN/prerm 2>/dev/null; true')
     md5_file_folder("tmpdeb/")
     system2('dpkg-deb -b tmpdeb rustdesk.deb;')
 
@@ -631,16 +644,16 @@ def main():
                 os.rename('rustdesk.deb', 'rustdesk-%s.deb' % version)
 
 
-def md5_file(fn):
-    md5 = hashlib.md5(open('tmpdeb/' + fn, 'rb').read()).hexdigest()
-    system2('echo "%s  /%s" >> tmpdeb/DEBIAN/md5sums' % (md5, fn))
+def md5_file(base_dir, fn):
+    md5 = hashlib.md5(open(os.path.join(base_dir, fn), 'rb').read()).hexdigest()
+    system2('echo "%s  /%s" >> %s/DEBIAN/md5sums' % (md5, fn, base_dir))
 
 def md5_file_folder(base_dir):
     base_path = Path(base_dir)
     for file in base_path.rglob('*'):
         if file.is_file() and 'DEBIAN' not in file.parts:
             relative_path = file.relative_to(base_path)
-            md5_file(str(relative_path))
+            md5_file(base_dir, str(relative_path))
 
 
 if __name__ == "__main__":
