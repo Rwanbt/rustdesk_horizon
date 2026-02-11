@@ -5,7 +5,7 @@ Summary:    RPM package
 License:    GPL-3.0
 URL:        https://rustdesk.com
 Vendor:     rustdesk <info@rustdesk.com>
-Requires:   gtk3 libxcb1 libXfixes3 alsa-utils libXtst6 libva2 pam gstreamer-plugins-base gstreamer-plugin-pipewire
+Requires:   gtk3 libxcb1 libXfixes3 alsa-utils libXtst6 libva2 pam gstreamer-plugins-base gstreamer-plugin-pipewire evdi
 Recommends: libayatana-appindicator3-1 xdotool
 Provides:   libdesktop_drop_plugin.so()(64bit), libdesktop_multi_window_plugin.so()(64bit), libfile_selector_linux_plugin.so()(64bit), libflutter_custom_cursor_plugin.so()(64bit), libflutter_linux_gtk.so()(64bit), libscreen_retriever_plugin.so()(64bit), libtray_manager_plugin.so()(64bit), liburl_launcher_linux_plugin.so()(64bit), libwindow_manager_plugin.so()(64bit), libwindow_size_plugin.so()(64bit), libtexture_rgba_renderer_plugin.so()(64bit)
 
@@ -56,6 +56,16 @@ case "$1" in
 esac
 
 %post
+# Load EVDI kernel module and ensure it loads on boot
+lsmod | grep -q evdi || modprobe evdi || true
+mkdir -p /etc/modules-load.d
+echo "evdi" > /etc/modules-load.d/evdi.conf
+
+# Install udev rule for EVDI virtual display ACLs
+echo 'SUBSYSTEM=="drm", DRIVERS=="evdi", MODE="0666"' > /etc/udev/rules.d/99-evdi.rules
+udevadm control --reload-rules || true
+test -e /sys/devices/evdi/add && chmod 0666 /sys/devices/evdi/add /sys/devices/evdi/remove_all || true
+
 cp /usr/share/rustdesk/files/rustdesk.service /etc/systemd/system/rustdesk.service
 cp /usr/share/rustdesk/files/rustdesk.desktop /usr/share/applications/
 cp /usr/share/rustdesk/files/rustdesk-link.desktop /usr/share/applications/

@@ -1,4 +1,4 @@
-use hbb_common::{bail, ResultType};
+use hbb_common::ResultType;
 use std::sync::Mutex;
 
 #[cfg(windows)]
@@ -1107,11 +1107,90 @@ pub mod linux_evdi {
     use std::ffi::CStr;
     use std::os::raw::{c_int, c_uint, c_void};
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Condvar, Mutex};
 
     type EvdiHandle = *mut c_void;
 
-    // FFI function types for libevdi
+    // ========== EVDI C structs ==========
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct EvdiRect {
+        x1: c_int,
+        y1: c_int,
+        x2: c_int,
+        y2: c_int,
+    }
+
+    #[repr(C)]
+    struct EvdiBuffer {
+        id: c_int,
+        buffer: *mut c_void,
+        width: c_int,
+        height: c_int,
+        stride: c_int,
+        rects: *mut EvdiRect,
+        rect_count: c_int,
+    }
+
+    #[repr(C)]
+    struct EvdiMode {
+        width: c_int,
+        height: c_int,
+        refresh_rate: c_int,
+        bits_per_pixel: c_int,
+        pixel_format: c_uint,
+    }
+
+    #[repr(C)]
+    struct EvdiCursorSet {
+        hot_x: i32,
+        hot_y: i32,
+        width: u32,
+        height: u32,
+        enabled: u8,
+        buffer_length: u32,
+        buffer: *mut u32,
+        pixel_format: u32,
+        stride: u32,
+    }
+
+    #[repr(C)]
+    struct EvdiCursorMove {
+        x: i32,
+        y: i32,
+    }
+
+    #[repr(C)]
+    struct EvdiDdcciData {
+        address: u16,
+        flags: u16,
+        buffer_length: u32,
+        buffer: *mut u8,
+    }
+
+    #[repr(C)]
+    struct EvdiEventContext {
+        dpms_handler: Option<unsafe extern "C" fn(dpms_mode: c_int, user_data: *mut c_void)>,
+        mode_changed_handler: Option<unsafe extern "C" fn(mode: EvdiMode, user_data: *mut c_void)>,
+        update_ready_handler: Option<
+            unsafe extern "C" fn(buffer_to_be_updated: c_int, user_data: *mut c_void),
+        >,
+        crtc_state_handler: Option<unsafe extern "C" fn(state: c_int, user_data: *mut c_void)>,
+        cursor_set_handler: Option<
+            unsafe extern "C" fn(cursor_set: EvdiCursorSet, user_data: *mut c_void),
+        >,
+        cursor_move_handler: Option<
+            unsafe extern "C" fn(cursor_move: EvdiCursorMove, user_data: *mut c_void),
+        >,
+        ddcci_data_handler: Option<
+            unsafe extern "C" fn(ddcci_data: EvdiDdcciData, user_data: *mut c_void),
+        >,
+        user_data: *mut c_void,
+    }
+
+    // ========== FFI function types ==========
+
     type FnEvdiCheckDevice = unsafe extern "C" fn(device: c_int) -> c_int;
     type FnEvdiAddDevice = unsafe extern "C" fn() -> c_int;
     type FnEvdiOpen = unsafe extern "C" fn(device: c_int) -> EvdiHandle;
@@ -1123,6 +1202,18 @@ pub mod linux_evdi {
         sku_area_limit: u32,
     );
     type FnEvdiDisconnect = unsafe extern "C" fn(handle: EvdiHandle);
+    // Consumer loop functions
+    type FnEvdiRegisterBuffer = unsafe extern "C" fn(handle: EvdiHandle, buffer: EvdiBuffer);
+    type FnEvdiUnregisterBuffer = unsafe extern "C" fn(handle: EvdiHandle, buffer_id: c_int);
+    type FnEvdiRequestUpdate = unsafe extern "C" fn(handle: EvdiHandle, buffer_id: c_int) -> bool;
+    type FnEvdiGrabPixels = unsafe extern "C" fn(
+        handle: EvdiHandle,
+        rects: *mut EvdiRect,
+        num_rects: *mut c_int,
+    );
+    type FnEvdiHandleEvents =
+        unsafe extern "C" fn(handle: EvdiHandle, context: *mut EvdiEventContext);
+    type FnEvdiGetEventReady = unsafe extern "C" fn(handle: EvdiHandle) -> c_int;
 
     struct EvdiLib {
         _lib_handle: *mut c_void,
@@ -1132,6 +1223,12 @@ pub mod linux_evdi {
         close: FnEvdiClose,
         connect: FnEvdiConnect,
         disconnect: FnEvdiDisconnect,
+        register_buffer: FnEvdiRegisterBuffer,
+        unregister_buffer: FnEvdiUnregisterBuffer,
+        request_update: FnEvdiRequestUpdate,
+        grab_pixels: FnEvdiGrabPixels,
+        handle_events: FnEvdiHandleEvents,
+        get_event_ready: FnEvdiGetEventReady,
     }
 
     // Safety: EvdiLib contains function pointers and an opaque library handle.
@@ -1141,24 +1238,27 @@ pub mod linux_evdi {
     impl EvdiLib {
         fn load() -> Option<Self> {
             unsafe {
-                // Try libevdi.so.0 first, then libevdi.so
-                let lib = hbb_common::libc::dlopen(
-                    b"libevdi.so.0\0".as_ptr() as *const hbb_common::libc::c_char,
-                    hbb_common::libc::RTLD_NOW,
-                );
-                let lib = if lib.is_null() {
-                    let lib = hbb_common::libc::dlopen(
-                        b"libevdi.so\0".as_ptr() as *const hbb_common::libc::c_char,
+                // Try libevdi.so.1 first (Ubuntu 24.04+), then libevdi.so.0, then libevdi.so
+                let names: &[&[u8]] = &[
+                    b"libevdi.so.1\0",
+                    b"libevdi.so.0\0",
+                    b"libevdi.so\0",
+                ];
+                let mut lib = std::ptr::null_mut();
+                for name in names {
+                    lib = hbb_common::libc::dlopen(
+                        name.as_ptr() as *const hbb_common::libc::c_char,
                         hbb_common::libc::RTLD_NOW,
                     );
-                    if lib.is_null() {
-                        log::info!("EVDI: libevdi.so not found: {}", get_dl_error());
-                        return None;
+                    if !lib.is_null() {
+                        log::info!("EVDI: opened {}", String::from_utf8_lossy(&name[..name.len()-1]));
+                        break;
                     }
-                    lib
-                } else {
-                    lib
-                };
+                }
+                if lib.is_null() {
+                    log::info!("EVDI: libevdi not found: {}", get_dl_error());
+                    return None;
+                }
 
                 macro_rules! load_sym {
                     ($lib:expr, $name:expr, $type:ty) => {{
@@ -1181,8 +1281,19 @@ pub mod linux_evdi {
                 let close = load_sym!(lib, "evdi_close", FnEvdiClose);
                 let connect = load_sym!(lib, "evdi_connect", FnEvdiConnect);
                 let disconnect = load_sym!(lib, "evdi_disconnect", FnEvdiDisconnect);
+                let register_buffer =
+                    load_sym!(lib, "evdi_register_buffer", FnEvdiRegisterBuffer);
+                let unregister_buffer =
+                    load_sym!(lib, "evdi_unregister_buffer", FnEvdiUnregisterBuffer);
+                let request_update =
+                    load_sym!(lib, "evdi_request_update", FnEvdiRequestUpdate);
+                let grab_pixels = load_sym!(lib, "evdi_grab_pixels", FnEvdiGrabPixels);
+                let handle_events =
+                    load_sym!(lib, "evdi_handle_events", FnEvdiHandleEvents);
+                let get_event_ready =
+                    load_sym!(lib, "evdi_get_event_ready", FnEvdiGetEventReady);
 
-                log::info!("EVDI: libevdi loaded successfully");
+                log::info!("EVDI: libevdi loaded successfully (with consumer loop support)");
                 Some(Self {
                     _lib_handle: lib,
                     check_device,
@@ -1191,6 +1302,12 @@ pub mod linux_evdi {
                     close,
                     connect,
                     disconnect,
+                    register_buffer,
+                    unregister_buffer,
+                    request_update,
+                    grab_pixels,
+                    handle_events,
+                    get_event_ready,
                 })
             }
         }
@@ -1215,9 +1332,26 @@ pub mod linux_evdi {
         }
     }
 
+    /// Function pointers needed by the consumer thread (copied from EvdiLib so
+    /// the thread doesn't need access to the MANAGER mutex).
+    #[derive(Clone, Copy)]
+    struct ConsumerFns {
+        register_buffer: FnEvdiRegisterBuffer,
+        unregister_buffer: FnEvdiUnregisterBuffer,
+        request_update: FnEvdiRequestUpdate,
+        grab_pixels: FnEvdiGrabPixels,
+        handle_events: FnEvdiHandleEvents,
+        get_event_ready: FnEvdiGetEventReady,
+    }
+
+    // Safety: ConsumerFns contains only function pointers (plain addresses).
+    unsafe impl Send for ConsumerFns {}
+
     struct EvdiDevice {
         handle: EvdiHandle,
         device_id: i32,
+        consumer_stop: Arc<AtomicBool>,
+        consumer_thread: Option<std::thread::JoinHandle<()>>,
     }
 
     // Safety: EvdiDevice contains an opaque handle pointer.
@@ -1225,17 +1359,149 @@ pub mod linux_evdi {
     unsafe impl Send for EvdiDevice {}
 
     impl EvdiDevice {
-        fn disconnect_and_close_fns(
-            &self,
+        fn disconnect_and_close(
+            &mut self,
             disconnect_fn: FnEvdiDisconnect,
             close_fn: FnEvdiClose,
         ) {
+            // Stop the consumer thread first
+            self.consumer_stop.store(true, Ordering::Relaxed);
+            if let Some(thread) = self.consumer_thread.take() {
+                let _ = thread.join();
+            }
+            log::info!("EVDI: consumer thread stopped for card{}", self.device_id);
             unsafe {
                 (disconnect_fn)(self.handle);
                 (close_fn)(self.handle);
             }
             log::info!("EVDI: device {} disconnected and closed", self.device_id);
         }
+    }
+
+    /// Callback for EVDI update_ready events. Sets the AtomicBool to signal
+    /// that a buffer is ready to be grabbed.
+    unsafe extern "C" fn evdi_update_ready_callback(
+        _buffer_to_be_updated: c_int,
+        user_data: *mut c_void,
+    ) {
+        if !user_data.is_null() {
+            let flag = &*(user_data as *const AtomicBool);
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Spawn a consumer thread that keeps an EVDI device responsive by
+    /// periodically requesting updates and grabbing pixels.
+    /// Without this loop, GNOME Shell detects an unresponsive DRM output
+    /// and may black out the physical display.
+    fn spawn_consumer_thread(
+        handle: EvdiHandle,
+        width: u32,
+        height: u32,
+        fns: ConsumerFns,
+        stop_flag: Arc<AtomicBool>,
+    ) -> std::thread::JoinHandle<()> {
+        // Convert function pointers (which contain *mut c_void params) to raw usize
+        // so the closure is Send. These are just function addresses.
+        let handle_addr = handle as usize;
+        let fn_register = fns.register_buffer as usize;
+        let fn_unregister = fns.unregister_buffer as usize;
+        let fn_request = fns.request_update as usize;
+        let fn_grab = fns.grab_pixels as usize;
+        let fn_events = fns.handle_events as usize;
+        let fn_ready = fns.get_event_ready as usize;
+
+        std::thread::Builder::new()
+            .name("evdi-consumer".into())
+            .spawn(move || {
+                // Reconstruct the handle and function pointers from usize
+                let handle = handle_addr as EvdiHandle;
+                let register_buffer: FnEvdiRegisterBuffer = unsafe { std::mem::transmute(fn_register) };
+                let unregister_buffer: FnEvdiUnregisterBuffer = unsafe { std::mem::transmute(fn_unregister) };
+                let request_update: FnEvdiRequestUpdate = unsafe { std::mem::transmute(fn_request) };
+                let grab_pixels: FnEvdiGrabPixels = unsafe { std::mem::transmute(fn_grab) };
+                let handle_events: FnEvdiHandleEvents = unsafe { std::mem::transmute(fn_events) };
+                let get_event_ready: FnEvdiGetEventReady = unsafe { std::mem::transmute(fn_ready) };
+
+                let w = width as c_int;
+                let h = height as c_int;
+                let stride = w * 4; // XRGB8888
+
+                // Allocate a dummy framebuffer
+                let buf_size = (stride * h) as usize;
+                let mut buffer_data: Vec<u8> = vec![0u8; buf_size];
+
+                // Allocate rects array for grab_pixels
+                let mut rects = [EvdiRect { x1: 0, y1: 0, x2: 0, y2: 0 }; 16];
+
+                let evdi_buf = EvdiBuffer {
+                    id: 0,
+                    buffer: buffer_data.as_mut_ptr() as *mut c_void,
+                    width: w,
+                    height: h,
+                    stride,
+                    rects: rects.as_mut_ptr(),
+                    rect_count: rects.len() as c_int,
+                };
+
+                unsafe { (register_buffer)(handle, evdi_buf) };
+                log::info!("EVDI: consumer thread started ({}x{}, buffer {}KB)", width, height, buf_size / 1024);
+
+                // Get the event fd for polling
+                let event_fd = unsafe { (get_event_ready)(handle) };
+
+                // Flag set by the update_ready callback
+                let buffer_ready = AtomicBool::new(false);
+
+                let mut event_ctx = EvdiEventContext {
+                    dpms_handler: None,
+                    mode_changed_handler: None,
+                    update_ready_handler: Some(evdi_update_ready_callback),
+                    crtc_state_handler: None,
+                    cursor_set_handler: None,
+                    cursor_move_handler: None,
+                    ddcci_data_handler: None,
+                    user_data: &buffer_ready as *const AtomicBool as *mut c_void,
+                };
+
+                while !stop_flag.load(Ordering::Relaxed) {
+                    // Request an update for buffer 0
+                    let immediate = unsafe { (request_update)(handle, 0) };
+
+                    if immediate {
+                        // Pixels are ready now, grab them
+                        let mut num_rects: c_int = rects.len() as c_int;
+                        unsafe { (grab_pixels)(handle, rects.as_mut_ptr(), &mut num_rects) };
+                    } else {
+                        // Wait for the event fd to become ready (poll with 100ms timeout)
+                        let mut pollfd = hbb_common::libc::pollfd {
+                            fd: event_fd,
+                            events: hbb_common::libc::POLLIN,
+                            revents: 0,
+                        };
+                        let ret = unsafe { hbb_common::libc::poll(&mut pollfd, 1, 100) };
+                        if ret > 0 && (pollfd.revents & hbb_common::libc::POLLIN) != 0 {
+                            // Handle events (this dispatches update_ready_handler)
+                            unsafe { (handle_events)(handle, &mut event_ctx) };
+
+                            if buffer_ready.swap(false, Ordering::Relaxed) {
+                                let mut num_rects: c_int = rects.len() as c_int;
+                                unsafe {
+                                    (grab_pixels)(handle, rects.as_mut_ptr(), &mut num_rects)
+                                };
+                            }
+                        }
+                    }
+
+                    // Small sleep to avoid busy-spinning when no updates
+                    std::thread::sleep(std::time::Duration::from_millis(16)); // ~60fps cap
+                }
+
+                // Cleanup
+                unsafe { (unregister_buffer)(handle, 0) };
+                log::info!("EVDI: consumer thread exiting");
+            })
+            .expect("EVDI: failed to spawn consumer thread")
     }
 
     struct VirtualDisplayManager {
@@ -1256,68 +1522,192 @@ pub mod linux_evdi {
         }
     }
 
-    impl VirtualDisplayManager {
-        /// Retry loading libevdi if it wasn't available at startup.
-        fn try_reload_lib(&mut self) -> bool {
-            if self.lib.is_some() {
-                return true;
-            }
-            self.lib = EvdiLib::load();
-            self.lib.is_some()
-        }
-    }
-
     lazy_static::lazy_static! {
         static ref MANAGER: Arc<Mutex<VirtualDisplayManager>> =
             Arc::new(Mutex::new(VirtualDisplayManager::default()));
     }
 
-    // Only attempt auto-install once per session
-    static INSTALL_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+    // Readiness flag: signals that prepare_evdi() + reload_evdi_lib() have finished.
+    static EVDI_PREPARE_DONE: AtomicBool = AtomicBool::new(false);
+    static EVDI_PREPARE_LOCK: Mutex<bool> = Mutex::new(false);
+    static EVDI_PREPARE_CVAR: Condvar = Condvar::new();
 
-    /// Auto-install EVDI packages and load kernel module if needed.
-    /// Called from is_supported() when EVDI is not yet available.
-    fn ensure_evdi_available() -> bool {
-        if INSTALL_ATTEMPTED.swap(true, Ordering::SeqCst) {
-            // Already attempted this session
-            return MANAGER.lock().unwrap().lib.is_some()
-                && std::path::Path::new("/sys/module/evdi").exists();
-        }
-
-        log::info!("EVDI: not available, attempting auto-installation...");
-
-        // Step 1: Install packages
-        if !crate::platform::linux::install_evdi_packages() {
-            log::error!("EVDI: auto-installation of packages failed");
-            return false;
-        }
-
-        // Step 2: Load kernel module
-        if !crate::platform::linux::load_evdi_module() {
-            log::error!("EVDI: failed to load kernel module after installation");
-            return false;
-        }
-
-        // Step 3: Retry loading the library
-        let loaded = MANAGER.lock().unwrap().try_reload_lib();
-        if loaded {
-            log::info!("EVDI: auto-installation successful, library loaded");
-        } else {
-            log::error!("EVDI: library still not loadable after installation");
-        }
-        loaded
+    /// Signal that EVDI preparation (package install, modprobe, sysfs, udev) is complete.
+    pub fn mark_prepare_done() {
+        EVDI_PREPARE_DONE.store(true, Ordering::SeqCst);
+        let mut done = EVDI_PREPARE_LOCK.lock().unwrap();
+        *done = true;
+        EVDI_PREPARE_CVAR.notify_all();
+        log::info!("EVDI: preparation marked as done");
     }
 
-    pub fn is_supported() -> bool {
-        let module_loaded = std::path::Path::new("/sys/module/evdi").exists();
-        let lib_available = MANAGER.lock().unwrap().lib.is_some();
-
-        if lib_available && module_loaded {
+    /// Wait for prepare_evdi() to finish, with timeout.
+    fn wait_for_prepare(timeout: std::time::Duration) -> bool {
+        if EVDI_PREPARE_DONE.load(Ordering::SeqCst) {
             return true;
         }
+        let done = EVDI_PREPARE_LOCK.lock().unwrap();
+        if *done {
+            return true;
+        }
+        let (result, _) = EVDI_PREPARE_CVAR.wait_timeout(done, timeout).unwrap();
+        *result || EVDI_PREPARE_DONE.load(Ordering::SeqCst)
+    }
 
-        // Try auto-install
-        ensure_evdi_available()
+    /// Reload the EVDI library into the manager.
+    /// Called from server startup thread after prepare_evdi() installs packages.
+    pub fn reload_evdi_lib() {
+        let mut manager = MANAGER.lock().unwrap();
+        if manager.lib.is_some() {
+            return;
+        }
+        log::info!("EVDI: attempting to reload libevdi...");
+        manager.lib = EvdiLib::load();
+        if manager.lib.is_some() {
+            log::info!("EVDI: library loaded successfully");
+        } else {
+            log::warn!("EVDI: library still not loadable");
+        }
+    }
+
+    /// Check if EVDI virtual display is supported.
+    /// Waits for prepare_evdi() to finish if it hasn't yet (up to 30s).
+    pub fn is_supported() -> bool {
+        if !EVDI_PREPARE_DONE.load(Ordering::SeqCst) {
+            log::info!("EVDI: waiting for preparation to complete...");
+            if !wait_for_prepare(std::time::Duration::from_secs(30)) {
+                log::warn!("EVDI: preparation timed out after 30s");
+            }
+        }
+        let lib_available = MANAGER.lock().unwrap().lib.is_some();
+        if !lib_available {
+            return false;
+        }
+        std::path::Path::new("/sys/module/evdi").exists()
+    }
+
+    /// Get the set of existing /dev/dri/card* IDs before adding a new device.
+    fn get_existing_card_ids() -> std::collections::HashSet<c_int> {
+        let mut ids = std::collections::HashSet::new();
+        if let Ok(entries) = std::fs::read_dir("/dev/dri") {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if let Some(num_str) = name_str.strip_prefix("card") {
+                    if let Ok(num) = num_str.parse::<c_int>() {
+                        ids.insert(num);
+                    }
+                }
+            }
+        }
+        ids
+    }
+
+    /// Try to set POSIX ACLs on /dev/dri/card* so the current user can access new EVDI devices.
+    /// Fallback for when the udev rule hasn't taken effect yet.
+    fn try_set_dri_acl() {
+        // Try $USER first, then whoami as fallback
+        let user = match std::env::var("USER") {
+            Ok(u) if !u.is_empty() => u,
+            _ => {
+                let u = hbb_common::whoami::username();
+                if u.is_empty() {
+                    log::warn!("EVDI: cannot determine username for ACL fallback");
+                    return;
+                }
+                u
+            },
+        };
+        if let Ok(entries) = std::fs::read_dir("/dev/dri") {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.starts_with("card") {
+                    let path = entry.path();
+                    let _ = std::process::Command::new("setfacl")
+                        .args(["-m", &format!("u:{}:rw", user), &path.to_string_lossy()])
+                        .output();
+                }
+            }
+            log::info!("EVDI: applied setfacl fallback on /dev/dri/card* for user {}", user);
+        }
+    }
+
+    /// Check if a card is an EVDI device via sysfs (independent of libevdi's check_device).
+    fn is_evdi_via_sysfs(card_id: c_int) -> bool {
+        let path = format!("/sys/class/drm/card{}/device/uevent", card_id);
+        match std::fs::read_to_string(&path) {
+            Ok(content) => content.contains("DRIVER=evdi"),
+            Err(_) => false,
+        }
+    }
+
+    /// After evdi_add_device(), discover the newly created EVDI device by scanning
+    /// /dev/dri/card* for new entries not in `known_ids`.
+    /// evdi_add_device() returns 1 for success (NOT a device number) in EVDI 1.14.x,
+    /// so we must scan to find which card was actually created.
+    ///
+    /// NOTE: We try evdi_open() directly instead of relying on evdi_check_device(),
+    /// because check_device() may return UNRECOGNIZED for valid EVDI devices on
+    /// certain libevdi versions (observed with 1.14.2 on Ubuntu 24.04).
+    fn discover_new_evdi_device(
+        _check_fn: FnEvdiCheckDevice,
+        open_fn: FnEvdiOpen,
+        known_ids: &std::collections::HashSet<c_int>,
+    ) -> Option<(c_int, EvdiHandle)> {
+        const MAX_RETRIES: u32 = 50;
+        const RETRY_DELAY_MS: u64 = 100;
+        const ACL_FALLBACK_ATTEMPT: u32 = 15;
+
+        for attempt in 0..MAX_RETRIES {
+            if attempt == ACL_FALLBACK_ATTEMPT {
+                try_set_dri_acl();
+            }
+
+            // Scan for new card devices that weren't there before
+            let current_ids = get_existing_card_ids();
+            for &card_id in &current_ids {
+                if known_ids.contains(&card_id) {
+                    continue; // Skip devices that existed before add_device()
+                }
+                // New device found — verify it's EVDI via sysfs before trying to open
+                if !is_evdi_via_sysfs(card_id) {
+                    log::debug!(
+                        "EVDI: card{} is new but not an EVDI device (attempt {})",
+                        card_id,
+                        attempt
+                    );
+                    continue;
+                }
+                // It's an EVDI device — try to open it directly
+                let handle = unsafe { (open_fn)(card_id) };
+                if !handle.is_null() {
+                    log::info!(
+                        "EVDI: discovered and opened new device card{} (attempt {})",
+                        card_id,
+                        attempt
+                    );
+                    return Some((card_id, handle));
+                } else {
+                    log::debug!(
+                        "EVDI: card{} is EVDI but evdi_open failed (attempt {}), retrying...",
+                        card_id,
+                        attempt
+                    );
+                }
+            }
+
+            if attempt == 0 {
+                log::info!(
+                    "EVDI: scanning for new device (known cards: {:?})",
+                    known_ids
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
+        }
+
+        log::error!("EVDI: failed to discover new device after {} retries", MAX_RETRIES);
+        None
     }
 
     pub fn plug_in_headless() -> ResultType<()> {
@@ -1327,42 +1717,65 @@ pub mod linux_evdi {
             .as_ref()
             .ok_or_else(|| hbb_common::anyhow::anyhow!("EVDI library not loaded"))?;
         let add_device_fn = lib.add_device;
+        let check_device_fn = lib.check_device;
         let open_fn = lib.open;
         let connect_fn = lib.connect;
+        let consumer_fns = ConsumerFns {
+            register_buffer: lib.register_buffer,
+            unregister_buffer: lib.unregister_buffer,
+            request_update: lib.request_update,
+            grab_pixels: lib.grab_pixels,
+            handle_events: lib.handle_events,
+            get_event_ready: lib.get_event_ready,
+        };
 
         if manager.headless.is_some() {
             log::debug!("EVDI: headless display already exists");
             return Ok(());
         }
 
-        // Add a new EVDI device
-        let device_id = unsafe { (add_device_fn)() };
-        if device_id < 0 {
-            bail!("EVDI: failed to add device (requires root/video group permissions)");
+        let known_ids = get_existing_card_ids();
+
+        let ret = unsafe { (add_device_fn)() };
+        if ret <= 0 {
+            bail!("EVDI: failed to add device (requires write access to /sys/devices/evdi/add)");
         }
 
-        // Open the device
-        let handle = unsafe { (open_fn)(device_id) };
-        if handle.is_null() {
-            bail!("EVDI: failed to open device {}", device_id);
-        }
+        let (device_id, handle) = match discover_new_evdi_device(check_device_fn, open_fn, &known_ids) {
+            Some(result) => result,
+            None => bail!("EVDI: failed to find/open new device after add_device (check permissions on /dev/dri/card*)"),
+        };
 
-        // Generate EDID for 1920x1080@60Hz and connect
-        let edid = generate_edid(1920, 1080, 60);
-        let area_limit = 1920u32 * 1080u32;
+        let (width, height): (u32, u32) = (1920, 1080);
+        let edid = generate_edid(width, height, 60);
+        let area_limit = width * height;
 
         unsafe {
             (connect_fn)(handle, edid.as_ptr(), edid.len() as c_uint, area_limit);
         }
 
+        // Spawn consumer thread to keep the EVDI device responsive
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let thread = spawn_consumer_thread(handle, width, height, consumer_fns, stop_flag.clone());
+
         log::info!(
-            "EVDI: headless virtual display created (device {}, 1920x1080@60Hz)",
-            device_id
+            "EVDI: headless virtual display created (card{}, {}x{}@60Hz)",
+            device_id, width, height
         );
-        manager.headless = Some(EvdiDevice { handle, device_id });
+        manager.headless = Some(EvdiDevice {
+            handle,
+            device_id,
+            consumer_stop: stop_flag,
+            consumer_thread: Some(thread),
+        });
+
+        // Position the virtual display via xrandr (async, doesn't block)
+        position_virtual_display_async();
 
         Ok(())
     }
+
+    const MAX_VIRTUAL_DISPLAYS: usize = 4;
 
     pub fn plug_in_monitor(idx: u32, modes: &[super::MonitorMode]) -> ResultType<()> {
         let mut manager = MANAGER.lock().unwrap();
@@ -1371,12 +1784,36 @@ pub mod linux_evdi {
             .as_ref()
             .ok_or_else(|| hbb_common::anyhow::anyhow!("EVDI library not loaded"))?;
         let add_device_fn = lib.add_device;
+        let check_device_fn = lib.check_device;
         let open_fn = lib.open;
         let connect_fn = lib.connect;
+        let consumer_fns = ConsumerFns {
+            register_buffer: lib.register_buffer,
+            unregister_buffer: lib.unregister_buffer,
+            request_update: lib.request_update,
+            grab_pixels: lib.grab_pixels,
+            handle_events: lib.handle_events,
+            get_event_ready: lib.get_event_ready,
+        };
 
-        if manager.peers.contains_key(&idx) {
-            return Ok(());
+        // Enforce max display count
+        if manager.peers.len() >= MAX_VIRTUAL_DISPLAYS {
+            bail!("EVDI: maximum of {} virtual displays reached", MAX_VIRTUAL_DISPLAYS);
         }
+
+        // idx == 0 means "add one, auto-assign index" (same convention as Amyuni IDD)
+        let actual_idx = if idx == 0 {
+            let mut next = manager.next_peer_index;
+            while manager.peers.contains_key(&next) {
+                next += 1;
+            }
+            next
+        } else {
+            if manager.peers.contains_key(&idx) {
+                return Ok(());
+            }
+            idx
+        };
 
         let (width, height, refresh) = if let Some(m) = modes.first() {
             (m.width, m.height, m.sync)
@@ -1384,15 +1821,19 @@ pub mod linux_evdi {
             (1920, 1080, 60)
         };
 
-        let device_id = unsafe { (add_device_fn)() };
-        if device_id < 0 {
+        // Snapshot existing card devices before adding a new one
+        let known_ids = get_existing_card_ids();
+
+        let ret = unsafe { (add_device_fn)() };
+        if ret <= 0 {
             bail!("EVDI: failed to add device");
         }
 
-        let handle = unsafe { (open_fn)(device_id) };
-        if handle.is_null() {
-            bail!("EVDI: failed to open device {}", device_id);
-        }
+        // Discover the newly created device by scanning /dev/dri/card*
+        let (device_id, handle) = match discover_new_evdi_device(check_device_fn, open_fn, &known_ids) {
+            Some(result) => result,
+            None => bail!("EVDI: failed to find/open new device after add_device (check permissions on /dev/dri/card*)"),
+        };
 
         let edid = generate_edid(width, height, refresh);
         let area_limit = width * height;
@@ -1401,15 +1842,30 @@ pub mod linux_evdi {
             (connect_fn)(handle, edid.as_ptr(), edid.len() as c_uint, area_limit);
         }
 
+        // Spawn consumer thread to keep the EVDI device responsive
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let thread = spawn_consumer_thread(handle, width, height, consumer_fns, stop_flag.clone());
+
         log::info!(
-            "EVDI: virtual display {} created (device {}, {}x{}@{}Hz)",
-            idx,
+            "EVDI: virtual display {} created (card{}, {}x{}@{}Hz)",
+            actual_idx,
             device_id,
             width,
             height,
             refresh
         );
-        manager.peers.insert(idx, EvdiDevice { handle, device_id });
+        manager.peers.insert(actual_idx, EvdiDevice {
+            handle,
+            device_id,
+            consumer_stop: stop_flag,
+            consumer_thread: Some(thread),
+        });
+        if actual_idx >= manager.next_peer_index {
+            manager.next_peer_index = actual_idx + 1;
+        }
+
+        // Position the virtual display via xrandr (async, doesn't block)
+        position_virtual_display_async();
 
         Ok(())
     }
@@ -1424,8 +1880,17 @@ pub mod linux_evdi {
             .ok_or_else(|| hbb_common::anyhow::anyhow!("EVDI library not loaded"))?;
         // Copy function pointers to avoid borrow conflict with manager mutation
         let add_device_fn = lib.add_device;
+        let check_device_fn = lib.check_device;
         let open_fn = lib.open;
         let connect_fn = lib.connect;
+        let consumer_fns = ConsumerFns {
+            register_buffer: lib.register_buffer,
+            unregister_buffer: lib.unregister_buffer,
+            request_update: lib.request_update,
+            grab_pixels: lib.grab_pixels,
+            handle_events: lib.handle_events,
+            get_event_ready: lib.get_event_ready,
+        };
 
         let mut indices = Vec::new();
 
@@ -1442,21 +1907,25 @@ pub mod linux_evdi {
                 (1920, 1080, 60)
             };
 
-            let device_id = unsafe { (add_device_fn)() };
-            if device_id < 0 {
+            // Snapshot existing card devices before adding a new one
+            let known_ids = get_existing_card_ids();
+
+            let ret = unsafe { (add_device_fn)() };
+            if ret <= 0 {
                 log::error!("EVDI: failed to add device for peer index {}", idx);
                 continue;
             }
 
-            let handle = unsafe { (open_fn)(device_id) };
-            if handle.is_null() {
-                log::error!(
-                    "EVDI: failed to open device {} for peer index {}",
-                    device_id,
-                    idx
-                );
-                continue;
-            }
+            let (device_id, handle) = match discover_new_evdi_device(check_device_fn, open_fn, &known_ids) {
+                Some(result) => result,
+                None => {
+                    log::error!(
+                        "EVDI: failed to find/open new device for peer index {}",
+                        idx
+                    );
+                    continue;
+                }
+            };
 
             let edid = generate_edid(width, height, refresh);
             let area_limit = width * height;
@@ -1464,6 +1933,10 @@ pub mod linux_evdi {
             unsafe {
                 (connect_fn)(handle, edid.as_ptr(), edid.len() as c_uint, area_limit);
             }
+
+            // Spawn consumer thread to keep the EVDI device responsive
+            let stop_flag = Arc::new(AtomicBool::new(false));
+            let thread = spawn_consumer_thread(handle, width, height, consumer_fns, stop_flag.clone());
 
             log::info!(
                 "EVDI: peer virtual display {} created (device {}, {}x{}@{}Hz)",
@@ -1473,9 +1946,19 @@ pub mod linux_evdi {
                 height,
                 refresh
             );
-            manager.peers.insert(idx, EvdiDevice { handle, device_id });
+            manager.peers.insert(idx, EvdiDevice {
+                handle,
+                device_id,
+                consumer_stop: stop_flag,
+                consumer_thread: Some(thread),
+            });
             indices.push(idx);
             manager.next_peer_index = idx + 1;
+        }
+
+        // Position virtual displays via xrandr (async, doesn't block)
+        if !indices.is_empty() {
+            position_virtual_display_async();
         }
 
         Ok(indices)
@@ -1487,23 +1970,31 @@ pub mod linux_evdi {
             .lib
             .as_ref()
             .ok_or_else(|| hbb_common::anyhow::anyhow!("EVDI library not loaded"))?;
-        // Copy function pointers to avoid borrow conflict
         let disconnect_fn = lib.disconnect;
         let close_fn = lib.close;
 
         if index < 0 {
             // Plug out all
-            let devices: Vec<EvdiDevice> = manager.peers.drain().map(|(_, d)| d).collect();
-            for device in devices {
-                device.disconnect_and_close_fns(disconnect_fn, close_fn);
+            let mut devices: Vec<EvdiDevice> = manager.peers.drain().map(|(_, d)| d).collect();
+            for device in &mut devices {
+                device.disconnect_and_close(disconnect_fn, close_fn);
             }
-            if let Some(headless) = manager.headless.take() {
-                headless.disconnect_and_close_fns(disconnect_fn, close_fn);
+            if let Some(ref mut headless) = manager.headless {
+                headless.disconnect_and_close(disconnect_fn, close_fn);
+            }
+            manager.headless = None;
+        } else if index == 0 {
+            // index == 0 means "remove one" (same convention as Amyuni IDD)
+            // Remove the display with the highest index
+            if let Some(&max_idx) = manager.peers.keys().max() {
+                if let Some(ref mut device) = manager.peers.remove(&max_idx) {
+                    device.disconnect_and_close(disconnect_fn, close_fn);
+                }
             }
         } else {
             let idx = index as u32;
-            if let Some(device) = manager.peers.remove(&idx) {
-                device.disconnect_and_close_fns(disconnect_fn, close_fn);
+            if let Some(ref mut device) = manager.peers.remove(&idx) {
+                device.disconnect_and_close(disconnect_fn, close_fn);
             }
         }
 
@@ -1520,8 +2011,8 @@ pub mod linux_evdi {
         let close_fn = lib.close;
 
         for &idx in indices {
-            if let Some(device) = manager.peers.remove(&idx) {
-                device.disconnect_and_close_fns(disconnect_fn, close_fn);
+            if let Some(ref mut device) = manager.peers.remove(&idx) {
+                device.disconnect_and_close(disconnect_fn, close_fn);
             }
         }
 
@@ -1533,13 +2024,14 @@ pub mod linux_evdi {
         if let Some(lib) = &manager.lib {
             let disconnect_fn = lib.disconnect;
             let close_fn = lib.close;
-            let devices: Vec<EvdiDevice> = manager.peers.drain().map(|(_, d)| d).collect();
-            for device in devices {
-                device.disconnect_and_close_fns(disconnect_fn, close_fn);
+            let mut devices: Vec<EvdiDevice> = manager.peers.drain().map(|(_, d)| d).collect();
+            for device in &mut devices {
+                device.disconnect_and_close(disconnect_fn, close_fn);
             }
-            if let Some(headless) = manager.headless.take() {
-                headless.disconnect_and_close_fns(disconnect_fn, close_fn);
+            if let Some(ref mut headless) = manager.headless {
+                headless.disconnect_and_close(disconnect_fn, close_fn);
             }
+            manager.headless = None;
         }
         Ok(())
     }
@@ -1557,18 +2049,125 @@ pub mod linux_evdi {
 
     pub fn get_platform_additions() -> serde_json::Map<String, serde_json::Value> {
         let mut map = serde_json::Map::new();
+        if !is_supported() {
+            return map;
+        }
+        // Tell the Flutter client we use the EVDI virtual display implementation
+        map.insert("idd_impl".into(), serde_json::json!("evdi"));
         let manager = MANAGER.lock().unwrap();
-        let vds: Vec<u32> = manager.peers.keys().cloned().collect();
-        if !vds.is_empty() {
+        let count = manager.peers.len();
+        if count > 0 {
             map.insert(
                 "evdi_virtual_displays".into(),
-                serde_json::json!(vds),
+                serde_json::json!(count),
             );
         }
         if manager.headless.is_some() {
             map.insert("evdi_headless".into(), serde_json::json!(true));
         }
         map
+    }
+
+    // =========================================================================
+    // xrandr positioning
+    // =========================================================================
+
+    /// Position the EVDI virtual display to the right of the primary monitor
+    /// using xrandr. Runs in a background thread to avoid blocking.
+    fn position_virtual_display_async() {
+        std::thread::Builder::new()
+            .name("evdi-xrandr".into())
+            .spawn(|| {
+                use std::process::Command;
+                // Wait for X11 to detect the new output (EVDI can take several seconds)
+                for attempt in 0..30 {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    let output = match Command::new("xrandr").arg("--query").output() {
+                        Ok(o) => o,
+                        Err(e) => {
+                            log::warn!("EVDI: xrandr query failed: {}", e);
+                            return;
+                        }
+                    };
+                    let xrandr_out = String::from_utf8_lossy(&output.stdout);
+                    if let Some((evdi_name, primary_name)) = parse_xrandr_outputs(&xrandr_out) {
+                        let result = Command::new("xrandr")
+                            .args(["--output", &evdi_name, "--auto", "--right-of", &primary_name])
+                            .output();
+                        match result {
+                            Ok(o) if o.status.success() => {
+                                log::info!(
+                                    "EVDI: positioned {} right of {} (attempt {})",
+                                    evdi_name, primary_name, attempt
+                                );
+                            }
+                            Ok(o) => {
+                                log::warn!(
+                                    "EVDI: xrandr position failed: {}",
+                                    String::from_utf8_lossy(&o.stderr)
+                                );
+                            }
+                            Err(e) => {
+                                log::warn!("EVDI: xrandr command failed: {}", e);
+                            }
+                        }
+                        return;
+                    }
+                }
+                log::warn!("EVDI: timed out waiting for xrandr to detect virtual display");
+            })
+            .ok();
+    }
+
+    /// Parse xrandr output to find the EVDI virtual display and the primary display.
+    /// Returns (evdi_output_name, primary_output_name) if found.
+    fn parse_xrandr_outputs(xrandr_out: &str) -> Option<(String, String)> {
+        let mut primary_name: Option<String> = None;
+        let mut evdi_name: Option<String> = None;
+
+        for line in xrandr_out.lines() {
+            // Each output line looks like: "eDP-1 connected primary 1920x1080+0+0 ..."
+            // or "DVI-I-1-1 connected 1920x1080+0+0 ..." (EVDI output)
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 2 {
+                continue;
+            }
+            if parts[1] != "connected" {
+                continue;
+            }
+            let name = parts[0].to_string();
+
+            // Detect primary
+            if parts.len() > 2 && parts[2] == "primary" {
+                primary_name = Some(name.clone());
+            } else if primary_name.is_none() {
+                // If no explicit primary, the first connected output is the primary
+                primary_name = Some(name.clone());
+            }
+
+            // EVDI outputs typically have names like DVI-I-*-*, HDMI-*-*, DP-*-*
+            // with a suffix pattern containing two hyphens and numbers.
+            // The key indicator is it's a "connected" output that is NOT the known
+            // physical display (eDP, LVDS). Also check for no resolution yet (new output).
+            let name_lower = name.to_lowercase();
+            if !name_lower.starts_with("edp") && !name_lower.starts_with("lvds") {
+                // Check if this output has no mode assigned yet (new EVDI display)
+                // or if it's a DVI-I / virtual output
+                if evdi_name.is_none() {
+                    // A newly connected EVDI output may show as "connected" with
+                    // no resolution, or with a resolution. Either way, if it's not
+                    // the physical display, it's likely our EVDI output.
+                    if primary_name.as_deref() != Some(&name) {
+                        evdi_name = Some(name);
+                    }
+                }
+            }
+        }
+
+        match (evdi_name, primary_name) {
+            (Some(e), Some(p)) => Some((e, p)),
+            _ => None,
+        }
     }
 
     // =========================================================================

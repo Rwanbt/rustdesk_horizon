@@ -133,69 +133,107 @@ pub fn is_evdi_available() -> bool {
     std::path::Path::new("/sys/module/evdi").exists()
 }
 
-/// Detect package manager and install EVDI packages.
-/// Returns true if installation succeeded (or packages already present).
-pub fn install_evdi_packages() -> bool {
-    let cmd = if has_cmd("apt-get") {
-        "apt-get install -y evdi-dkms libevdi0"
-    } else if has_cmd("dnf") {
-        "dnf install -y evdi"
-    } else if has_cmd("pacman") {
-        "pacman -S --noconfirm evdi"
-    } else if has_cmd("zypper") {
-        "zypper install -y evdi"
-    } else {
-        log::error!("EVDI auto-install: no supported package manager found");
-        return false;
-    };
-
-    log::info!("EVDI auto-install: running '{}'", cmd);
-    if is_root() {
-        match run_cmds(cmd) {
-            Ok(output) => {
-                let success = !output.contains("E: Unable to locate")
-                    && !output.contains("Error:");
-                if success {
-                    log::info!("EVDI auto-install: packages installed successfully");
-                } else {
-                    log::error!("EVDI auto-install: installation may have failed: {}", output);
-                }
-                success
-            }
-            Err(e) => {
-                log::error!("EVDI auto-install: command failed: {}", e);
-                false
-            }
+/// Check if libevdi shared library is installed on the system.
+pub fn is_evdi_lib_installed() -> bool {
+    if let Ok(out) = std::process::Command::new("ldconfig").args(["-p"]).output() {
+        if String::from_utf8_lossy(&out.stdout).contains("libevdi") {
+            return true;
         }
+    }
+    // Fallback: check common lib paths
+    std::path::Path::new("/usr/lib/x86_64-linux-gnu/libevdi.so").exists()
+        || std::path::Path::new("/usr/lib64/libevdi.so").exists()
+        || std::path::Path::new("/usr/lib/libevdi.so").exists()
+}
+
+/// Get the package install command for the current distro, if any.
+fn get_evdi_install_cmd() -> Option<&'static str> {
+    if has_cmd("apt-get") {
+        Some("apt-get install -y evdi-dkms libevdi1")
+    } else if has_cmd("dnf") {
+        Some("dnf install -y evdi")
+    } else if has_cmd("pacman") {
+        Some("pacman -S --noconfirm evdi")
+    } else if has_cmd("zypper") {
+        Some("zypper install -y evdi")
     } else {
-        log::info!("EVDI auto-install: not root, using privilege escalation");
-        run_cmds_privileged(cmd)
+        None
     }
 }
 
-/// Load the EVDI kernel module via modprobe.
-/// Returns true if the module is loaded after the call.
-pub fn load_evdi_module() -> bool {
-    if is_evdi_available() {
-        return true;
+/// Prepare EVDI at server startup: install packages if missing, load kernel module,
+/// set sysfs permissions, and install udev rule — all in a single sudo prompt.
+/// Called once at server start so EVDI is ready before any client connects.
+pub fn prepare_evdi() {
+    let need_packages = !is_evdi_lib_installed();
+    let need_module = !is_evdi_available();
+    let need_sysfs = if need_module {
+        true // fresh module load always needs chmod
+    } else {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open("/sys/devices/evdi/add")
+            .is_err()
+    };
+    let need_udev = match std::fs::read_to_string("/etc/udev/rules.d/99-evdi.rules") {
+        Ok(content) => !content.contains("MODE="),
+        Err(_) => true,
+    };
+
+    if !need_packages && !need_module && !need_sysfs && !need_udev {
+        log::info!("EVDI: everything already configured");
+        return;
     }
 
-    log::info!("EVDI auto-install: loading kernel module (modprobe evdi)");
-    let cmd = "modprobe evdi";
+    let mut cmds: Vec<String> = Vec::new();
+
+    if need_packages {
+        match get_evdi_install_cmd() {
+            Some(cmd) => {
+                log::info!("EVDI: will install packages");
+                cmds.push(cmd.to_string());
+            }
+            None => {
+                log::error!("EVDI: no supported package manager found");
+                return;
+            }
+        }
+    } else {
+        log::info!("EVDI: libevdi already installed");
+    }
+
+    if need_module {
+        log::info!("EVDI: will load kernel module");
+        cmds.push("modprobe evdi".to_string());
+    } else {
+        log::info!("EVDI: kernel module already loaded");
+    }
+
+    if need_sysfs {
+        // test -e guards against race with modprobe; || true prevents chain failure
+        cmds.push("test -e /sys/devices/evdi/add && chmod 0666 /sys/devices/evdi/add /sys/devices/evdi/remove_all || true".to_string());
+    }
+
+    if need_udev {
+        log::info!("EVDI: will install udev rule for DRI device ACLs");
+        cmds.push(
+            "echo 'SUBSYSTEM==\"drm\", DRIVERS==\"evdi\", MODE=\"0666\"' > /etc/udev/rules.d/99-evdi.rules && udevadm control --reload-rules && udevadm trigger --subsystem-match=drm".to_string()
+        );
+    }
+
+    if cmds.is_empty() {
+        return;
+    }
+
+    log::info!("EVDI: running privileged setup ({} commands)", cmds.len());
+    let combined = cmds.join(" && ");
     if is_root() {
-        let _ = run_cmds(cmd);
+        let _ = run_cmds(&combined);
     } else {
-        run_cmds_privileged(cmd);
+        run_cmds_privileged(&combined);
     }
 
-    // Verify it loaded
-    let loaded = is_evdi_available();
-    if loaded {
-        log::info!("EVDI auto-install: kernel module loaded successfully");
-    } else {
-        log::error!("EVDI auto-install: failed to load kernel module");
-    }
-    loaded
+    log::info!("EVDI: preparation complete");
 }
 
 #[inline]
@@ -624,6 +662,9 @@ fn try_start_server_(desktop: Option<&Desktop>) -> ResultType<Option<Child>> {
                 "TERM",
                 get_cur_term(&desktop.uid).unwrap_or_else(|| suggest_best_term()),
             ));
+            if !desktop.username.is_empty() {
+                envs.push(("USER", desktop.username.clone()));
+            }
             run_as_user(
                 vec!["--server"],
                 Some((desktop.uid.clone(), desktop.username.clone())),
@@ -769,6 +810,10 @@ pub fn start_os_service() {
     stop_rustdesk_servers();
     stop_subprocess();
     start_uinput_service();
+    // Prepare EVDI at service start (runs as root, no sudo prompt needed)
+    prepare_evdi();
+    crate::virtual_display_manager::linux_evdi::reload_evdi_lib();
+    crate::virtual_display_manager::linux_evdi::mark_prepare_done();
 
     std::thread::spawn(|| {
         allow_err!(crate::ipc::start(crate::POSTFIX_SERVICE));

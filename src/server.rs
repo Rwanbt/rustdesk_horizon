@@ -601,6 +601,12 @@ pub async fn start_server(is_server: bool, no_server: bool) {
         }
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         tokio::spawn(async { sync_and_watch_config_dir().await });
+        #[cfg(target_os = "linux")]
+        std::thread::spawn(|| {
+            crate::platform::linux::prepare_evdi();
+            crate::virtual_display_manager::linux_evdi::reload_evdi_lib();
+            crate::virtual_display_manager::linux_evdi::mark_prepare_done();
+        });
         #[cfg(target_os = "windows")]
         crate::platform::try_kill_broker();
         #[cfg(feature = "hwcodec")]
