@@ -91,9 +91,18 @@ struct ParsedPeerInfo {
 
 impl ParsedPeerInfo {
     fn is_support_virtual_display(&self) -> bool {
-        self.is_installed
+        // Windows: IDD drivers (requires installed service)
+        if self.is_installed
             && self.platform == "Windows"
             && (self.idd_impl == "rustdesk_idd" || self.idd_impl == "amyuni_idd")
+        {
+            return true;
+        }
+        // Linux: EVDI virtual display
+        if self.platform == "Linux" && self.idd_impl == "evdi" {
+            return true;
+        }
+        false
     }
 }
 
