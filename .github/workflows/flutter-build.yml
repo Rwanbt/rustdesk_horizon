@@ -277,6 +277,48 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
+          body: |
+            ## Download Guide
+
+            ### Windows
+            | File | Description |
+            |------|-------------|
+            | `rustdesk-*.exe` | Portable x86_64 (Flutter) |
+            | `rustdesk-*.msi` | Installer x86_64 |
+            | `rustdesk-*-sciter.exe` | Portable i686 (Sciter, 32-bit legacy) |
+
+            ### macOS
+            | File | Description |
+            |------|-------------|
+            | `rustdesk-*-x86_64.dmg` | Intel |
+            | `rustdesk-*-aarch64.dmg` | Apple Silicon (M1/M2) |
+
+            ### Android
+            | File | Description |
+            |------|-------------|
+            | `rustdesk-*-aarch64.apk` | ARM64 (most modern phones) |
+            | `rustdesk-*-armv7.apk` | ARMv7 (older phones) |
+            | `rustdesk-*-x86_64.apk` | x86_64 (emulator) |
+            | `rustdesk-*-universal.apk` | All architectures |
+
+            ### Linux
+            | File | Description |
+            |------|-------------|
+            | `rustdesk-*-x86_64.deb` | Debian/Ubuntu x86_64 |
+            | `rustdesk-*-aarch64.deb` | Debian/Ubuntu ARM64 |
+            | `rustdesk-*-x86_64.rpm` | Fedora x86_64 |
+            | `rustdesk-*-aarch64.rpm` | Fedora ARM64 |
+            | `rustdesk-*-x86_64-suse.rpm` | OpenSUSE |
+            | `rustdesk-*-x86_64.zst` | Arch Linux |
+            | `rustdesk-*-x86_64.AppImage` / `aarch64.AppImage` | AppImage (universal) |
+            | `rustdesk-*-x86_64.flatpak` / `aarch64.flatpak` | Flatpak |
+            | `rustdesk-*-x86_64-sciter.deb` | Sciter legacy (x86_64) |
+            | `rustdesk-*-armv7-sciter.deb` | Sciter legacy (ARM) |
+
+            ### iOS
+            | File | Description |
+            |------|-------------|
+            | `liblibrustdesk.a` | Library only (IPA not available yet) |
           files: |
             ./SignOutput/rustdesk-*.msi
             ./SignOutput/rustdesk-*.exe
