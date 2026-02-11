@@ -1390,6 +1390,19 @@ pub mod linux_evdi {
         }
     }
 
+    /// No-op cursor_set handler. Acknowledges cursor events from the EVDI
+    /// device so they don't cause artifacts on the physical display.
+    unsafe extern "C" fn evdi_cursor_set_callback(
+        _cursor_set: EvdiCursorSet,
+        _user_data: *mut c_void,
+    ) {}
+
+    /// No-op cursor_move handler.
+    unsafe extern "C" fn evdi_cursor_move_callback(
+        _cursor_move: EvdiCursorMove,
+        _user_data: *mut c_void,
+    ) {}
+
     /// Spawn a consumer thread that keeps an EVDI device responsive by
     /// periodically requesting updates and grabbing pixels.
     /// Without this loop, GNOME Shell detects an unresponsive DRM output
@@ -1458,8 +1471,8 @@ pub mod linux_evdi {
                     mode_changed_handler: None,
                     update_ready_handler: Some(evdi_update_ready_callback),
                     crtc_state_handler: None,
-                    cursor_set_handler: None,
-                    cursor_move_handler: None,
+                    cursor_set_handler: Some(evdi_cursor_set_callback),
+                    cursor_move_handler: Some(evdi_cursor_move_callback),
                     ddcci_data_handler: None,
                     user_data: &buffer_ready as *const AtomicBool as *mut c_void,
                 };
