@@ -23,7 +23,7 @@ use gstreamer_app::AppSink;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 
-use hbb_common::{bail, config, platform::linux::CMD_SH, serde_json, tokio, ResultType};
+use hbb_common::{bail, config, platform::linux::CMD_SH, serde_json, ResultType};
 
 use super::capturable::PixelProvider;
 use super::capturable::{Capturable, Recorder};
@@ -747,10 +747,13 @@ fn on_create_session_response(
                 Variant(Box::new("u3".to_string())),
             );
             // https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html
-            if is_server_running() {
-                args.insert("multiple".into(), Variant(Box::new(true)));
-            }
-            args.insert("types".into(), Variant(Box::new(1u32))); //| 2u32)));
+            // Always enable multiple selection so users can see ALL displays (physical + virtual)
+            args.insert("multiple".into(), Variant(Box::new(true)));
+
+            // Request both MONITOR (1) and VIRTUAL (4) displays to show Meta-N virtual monitors
+            // Type 2 (WINDOW) is omitted to avoid cluttering the dialog with application windows
+            args.insert("types".into(), Variant(Box::new(1u32 | 4u32))); // MONITOR | VIRTUAL
+            debug!("ScreenCast: requesting types={} (1=MONITOR, 4=VIRTUAL), multiple=true", 1u32 | 4u32);
 
             if capture_cursor {
                 get_available_cursor_modes().ok().map(|modes| {
@@ -821,10 +824,12 @@ fn on_select_devices_response(
             Variant(Box::new("u3".to_string())),
         );
         // https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html
-        if is_server_running() {
-            args.insert("multiple".into(), Variant(Box::new(true)));
-        }
-        args.insert("types".into(), Variant(Box::new(1u32))); //| 2u32)));
+        // Always enable multiple selection so users can see ALL displays (physical + virtual)
+        args.insert("multiple".into(), Variant(Box::new(true)));
+
+        // Request both MONITOR (1) and VIRTUAL (4) displays to show Meta-N virtual monitors
+        args.insert("types".into(), Variant(Box::new(1u32 | 4u32))); // MONITOR | VIRTUAL
+        debug!("ScreenCast: requesting types={} (1=MONITOR, 4=VIRTUAL), multiple=true", 1u32 | 4u32);
 
         let session = session.clone();
         let path = portal.select_sources(session.clone(), args)?;
@@ -926,6 +931,21 @@ fn on_start_response(
 }
 
 pub fn get_capturables() -> Result<Vec<PipeWireCapturable>, Box<dyn Error>> {
+    // TRY MUTTER FIRST (no user dialog, automatic capture of ALL displays)
+    if super::mutter_capture::is_mutter_available() {
+        match get_capturables_via_mutter() {
+            Ok(capturables) => {
+                debug!("Using Mutter ScreenCast RecordMonitor (NO user dialog)");
+                return Ok(capturables);
+            }
+            Err(e) => {
+                debug!("Mutter ScreenCast failed: {}, falling back to XDG portal", e);
+            }
+        }
+    }
+
+    // FALLBACK: Use XDG Desktop Portal (requires user dialog)
+    debug!("Using XDG Desktop Portal (will show user dialog)");
     let mut rdp_connection = match RDP_SESSION_INFO.lock() {
         Ok(conn) => conn,
         Err(err) => return Err(Box::new(err)),
@@ -965,6 +985,67 @@ pub fn get_capturables() -> Result<Vec<PipeWireCapturable>, Box<dyn Error>> {
             )
         })
         .collect())
+}
+
+/// Get capturables via Mutter ScreenCast RecordMonitor (GNOME only, no user dialog)
+/// This bypasses the XDG Desktop Portal completely and captures ALL physical displays automatically
+fn get_capturables_via_mutter() -> Result<Vec<PipeWireCapturable>, Box<dyn Error>> {
+    debug!("Attempting Mutter ScreenCast RecordMonitor (automatic, no dialog)...");
+
+    // Get ALL physical display connectors
+    let connectors = super::mutter_capture::get_all_physical_connectors()
+        .map_err(|e| DBusError(format!("Failed to get connectors: {}", e)))?;
+
+    debug!("Found {} physical displays via Mutter DisplayConfig", connectors.len());
+
+    // Open PipeWire socket once for all displays
+    let pw_fd_raw = super::mutter_capture::open_pipewire_socket()
+        .map_err(|e| DBusError(format!("Failed to open PipeWire socket: {}", e)))?;
+
+    // Convert std::os::unix::io::OwnedFd to dbus::arg::OwnedFd
+    use std::os::unix::io::IntoRawFd;
+    let pw_fd = unsafe { dbus::arg::OwnedFd::new(pw_fd_raw.into_raw_fd()) };
+
+    // Create RecordMonitor session for EACH display
+    let sessions = super::mutter_capture::create_sessions_for_all_displays()
+        .map_err(|e| DBusError(format!("Failed to create Mutter sessions: {}", e)))?;
+
+    if sessions.is_empty() {
+        return Err(Box::new(DBusError("No Mutter sessions created".into())));
+    }
+
+    // Get D-Bus connection (reuse from first session)
+    let conn = Arc::new(dbus::blocking::SyncConnection::new_session()
+        .map_err(|e| DBusError(format!("D-Bus connection failed: {}", e)))?);
+
+    // Create PipeWireCapturable for each session
+    let mut capturables = Vec::new();
+    for (i, session) in sessions.iter().enumerate() {
+        let connector_info = &connectors[i];
+
+        // Create stream info
+        let stream = PwStreamInfo {
+            path: session.node_id as u64,
+            source_type: 1, // MONITOR
+            position: (connector_info.x, connector_info.y),
+            size: (connector_info.width as usize, connector_info.height as usize),
+        };
+
+        let capturable = PipeWireCapturable::new(
+            conn.clone(),
+            pw_fd.clone(),
+            Arc::new(Mutex::new(None)),
+            &stream,
+        );
+
+        capturables.push(capturable);
+        debug!("Created capturer for {}: {}x{} at ({}, {})",
+            session.connector, connector_info.width, connector_info.height,
+            connector_info.x, connector_info.y);
+    }
+
+    tracing::info!("Mutter RecordMonitor: created {} capturers WITHOUT user dialog", capturables.len());
+    Ok(capturables)
 }
 
 // If `is_server_running()` is true, then `screencast_portal::start` is called.

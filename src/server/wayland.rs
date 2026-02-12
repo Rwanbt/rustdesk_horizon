@@ -129,6 +129,7 @@ pub(super) fn is_inited() -> Option<Message> {
 
 pub(super) async fn check_init() -> ResultType<()> {
     if !is_x11() {
+        log::info!("wayland::check_init() démarré, CAP_DISPLAY_INFO vide? {}", CAP_DISPLAY_INFO.read().unwrap().is_empty());
         if CAP_DISPLAY_INFO.read().unwrap().is_empty() {
             if crate::input_service::wayland_use_uinput() {
                 if let Some((minx, maxx, miny, maxy)) =
@@ -152,12 +153,51 @@ pub(super) async fn check_init() -> ResultType<()> {
             let mut lock = CAP_DISPLAY_INFO.write().unwrap();
             if lock.is_empty() {
                 // Check if PipeWire is already initialized to prevent duplicate recorder creation
-                if *PIPEWIRE_INITIALIZED.read().unwrap() {
+                let pw_init = *PIPEWIRE_INITIALIZED.read().unwrap();
+                log::info!("wayland::check_init() lock acquis, PIPEWIRE_INITIALIZED={}", pw_init);
+                if pw_init {
                     log::warn!("wayland_diag: Preventing duplicate PipeWire initialization");
                     return Ok(());
                 }
 
+                // AUTOMATIC RESTORE TOKEN INVALIDATION:
+                // Compare number of system displays vs cached displays
+                // If different, clear restore_token to force fresh portal dialog
+                let system_displays = scrap::wayland::display::get_displays();
+                let system_count = system_displays.displays.len();
+
+                // Get cached restore token display count (stored in a hidden config key)
+                use hbb_common::config::LocalConfig;
+                let cached_count: usize = LocalConfig::get_option("wayland-display-count")
+                    .parse()
+                    .unwrap_or(0);
+
+                if cached_count > 0 && system_count != cached_count {
+                    log::warn!(
+                        "Display count changed ({} → {}), invalidating restore_token to capture all displays",
+                        cached_count,
+                        system_count
+                    );
+                    LocalConfig::set_option("wayland-restore-token".to_string(), "".to_string());
+                }
+
+                // Store current system display count
+                LocalConfig::set_option(
+                    "wayland-display-count".to_string(),
+                    system_count.to_string(),
+                );
+
+                log::info!("wayland::check_init() système détecté {} displays", system_count);
+                log::info!("wayland::check_init() début initialisation PipeWire...");
                 let mut all = Display::all()?;
+                log::info!("wayland::check_init() Display::all() retourné {} displays (sélectionnés)", all.len());
+
+                // Log each display for debugging
+                for (i, display) in all.iter().enumerate() {
+                    log::debug!("  Display {}: {}x{} at ({}, {})",
+                        i, display.width(), display.height(), display.origin().0, display.origin().1);
+                }
+
                 log::debug!("Initializing displays with fill_displays()");
                 {
                     let temp_mouse_move_handle = input_service::TemporaryMouseMoveHandle::new();
@@ -215,15 +255,45 @@ pub(super) async fn check_init() -> ResultType<()> {
 }
 
 pub(super) async fn get_displays() -> ResultType<Vec<DisplayInfo>> {
+    log::info!("wayland::get_displays() appelé, vérification de l'initialisation...");
+
+    // AUTOMATIC DISPLAY CHANGE DETECTION:
+    // Check if system displays have changed (e.g., Meta-N added)
+    let system_displays = scrap::wayland::display::get_displays();
+    let system_count = system_displays.displays.len();
+
+    use hbb_common::config::LocalConfig;
+    let cached_count: usize = LocalConfig::get_option("wayland-display-count")
+        .parse()
+        .unwrap_or(0);
+
+    if cached_count > 0 && system_count != cached_count {
+        log::warn!(
+            "Display count changed during runtime ({} → {}), reinitializing PipeWire...",
+            cached_count,
+            system_count
+        );
+
+        // Clear PipeWire state and restore_token to capture new displays
+        clear();
+        LocalConfig::set_option("wayland-restore-token".to_string(), "".to_string());
+        LocalConfig::set_option("wayland-display-count".to_string(), system_count.to_string());
+
+        log::info!("PipeWire cleared, will reinitialize on next check_init()");
+    }
+
     check_init().await?;
     let cap_map = CAP_DISPLAY_INFO.read().unwrap();
+    log::info!("wayland::get_displays() CAP_DISPLAY_INFO contient {} entrées", cap_map.len());
     if let Some(addr) = cap_map.values().next() {
         let cap_display_info: *const CapDisplayInfo = *addr as _;
         unsafe {
             let cap_display_info = &*cap_display_info;
+            log::info!("wayland::get_displays() retourne {} displays", cap_display_info.displays.len());
             Ok(cap_display_info.displays.clone())
         }
     } else {
+        log::error!("wayland::get_displays() ÉCHEC: CAP_DISPLAY_INFO est vide!");
         bail!("Failed to get capturer display info");
     }
 }
