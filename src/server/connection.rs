@@ -1620,19 +1620,23 @@ impl Connection {
 
             try_activate_screen();
 
+            log::info!("connection: appel de update_get_sync_displays_on_login() pour le login...");
             match super::display_service::update_get_sync_displays_on_login().await {
                 Err(err) => {
+                    log::error!("connection: update_get_sync_displays_on_login() ÉCHEC: {}", err);
                     res.set_error(format!("{}", err));
                 }
                 Ok(displays) => {
+                    log::info!("connection: update_get_sync_displays_on_login() retourné {} displays", displays.len());
                     // For compatibility with old versions, we need to send the displays to the peer.
                     // But the displays may be updated later, before creating the video capturer.
                     #[cfg(target_os = "macos")]
                     {
                         self.retina.set_displays(&displays);
                     }
-                    pi.displays = displays;
+                    pi.displays = displays.clone();
                     pi.current_display = self.display_idx as _;
+                    log::info!("connection: PeerInfo configuré avec {} displays, current={}", displays.len(), self.display_idx);
                     #[cfg(not(any(target_os = "android", target_os = "ios")))]
                     {
                         pi.resolutions = Some(SupportedResolutions {
@@ -3668,27 +3672,62 @@ impl Connection {
                     height: h,
                     sync: 60,
                 }];
-                if let Err(e) = virtual_display_manager::plug_in_monitor(t.display as _, modes) {
-                    log::error!("Failed to plug in virtual display: {}", e);
-                    self.send(make_msg(format!(
-                        "Failed to plug in virtual display: {}",
-                        e
-                    )))
-                    .await;
-                } else {
-                    self.virtual_display_indices.push(t.display);
+                let display = t.display;
+                // Run on a dedicated thread to avoid blocking the async connection handler.
+                // The Mutter ScreenCast backend performs D-Bus calls + sleeps that would
+                // otherwise freeze input/video/keepalive processing for ~10 seconds.
+                let result = tokio::task::spawn_blocking(move || {
+                    virtual_display_manager::plug_in_monitor(display as _, modes)
+                })
+                .await;
+                match result {
+                    Ok(Ok(())) => {
+                        self.virtual_display_indices.push(t.display);
+
+                        // Sur Wayland, le mécanisme check_display_changed() est désactivé,
+                        // ET la liste des displays dans CAP_DISPLAY_INFO est figée à l'initialisation.
+                        // Il faut forcer une réinitialisation de PipeWire pour rescanner les displays.
+                        // Note: PipeWire reinit removed - causes SIGSEGV during active connection
+                        // The virtual display is already handled by Mutter ScreenCast backend
+                    }
+                    Ok(Err(e)) => {
+                        log::error!("Failed to plug in virtual display: {}", e);
+                        self.send(make_msg(format!(
+                            "Failed to plug in virtual display: {}",
+                            e
+                        )))
+                        .await;
+                    }
+                    Err(e) => {
+                        log::error!("Virtual display task panicked: {}", e);
+                        self.send(make_msg("Virtual display creation failed".to_string()))
+                            .await;
+                    }
                 }
             }
         } else {
-            if let Err(e) = virtual_display_manager::plug_out_monitor(t.display, false, true) {
-                log::error!("Failed to plug out virtual display {}: {}", t.display, e);
-                self.send(make_msg(format!(
-                    "Failed to plug out virtual displays: {}",
-                    e
-                )))
-                .await;
-            } else {
-                self.virtual_display_indices.retain(|&i| i != t.display);
+            let display = t.display;
+            let result = tokio::task::spawn_blocking(move || {
+                virtual_display_manager::plug_out_monitor(display, false, true)
+            })
+            .await;
+            match result {
+                Ok(Ok(())) => {
+                    self.virtual_display_indices.retain(|&i| i != t.display);
+
+                    // Note: PipeWire reinit removed - causes SIGSEGV during active connection
+                }
+                Ok(Err(e)) => {
+                    log::error!("Failed to plug out virtual display {}: {}", t.display, e);
+                    self.send(make_msg(format!(
+                        "Failed to plug out virtual displays: {}",
+                        e
+                    )))
+                    .await;
+                }
+                Err(e) => {
+                    log::error!("Virtual display removal task panicked: {}", e);
+                }
             }
         }
     }
