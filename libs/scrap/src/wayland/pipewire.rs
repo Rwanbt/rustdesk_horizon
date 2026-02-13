@@ -931,21 +931,21 @@ fn on_start_response(
 }
 
 pub fn get_capturables() -> Result<Vec<PipeWireCapturable>, Box<dyn Error>> {
-    // TRY MUTTER FIRST (no user dialog, automatic capture of ALL displays)
-    if super::mutter_capture::is_mutter_available() {
-        match get_capturables_via_mutter() {
-            Ok(capturables) => {
-                debug!("Using Mutter ScreenCast RecordMonitor (NO user dialog)");
-                return Ok(capturables);
-            }
-            Err(e) => {
-                debug!("Mutter ScreenCast failed: {}, falling back to XDG portal", e);
-            }
-        }
-    }
+    // TODO: Mutter RecordMonitor disabled temporarily - fd cloning issue needs fix
+    // if super::mutter_capture::is_mutter_available() {
+    //     match get_capturables_via_mutter() {
+    //         Ok(capturables) => {
+    //             debug!("Using Mutter ScreenCast RecordMonitor (NO user dialog)");
+    //             return Ok(capturables);
+    //         }
+    //         Err(e) => {
+    //             debug!("Mutter ScreenCast failed: {}, falling back to XDG portal", e);
+    //         }
+    //     }
+    // }
 
-    // FALLBACK: Use XDG Desktop Portal (requires user dialog)
-    debug!("Using XDG Desktop Portal (will show user dialog)");
+    // Use XDG Desktop Portal (optimized: types=5, multiple=true)
+    debug!("Using XDG Desktop Portal (optimized, dialog shows ONCE)");
     let mut rdp_connection = match RDP_SESSION_INFO.lock() {
         Ok(conn) => conn,
         Err(err) => return Err(Box::new(err)),

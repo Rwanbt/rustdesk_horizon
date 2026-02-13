@@ -256,32 +256,6 @@ pub(super) async fn check_init() -> ResultType<()> {
 
 pub(super) async fn get_displays() -> ResultType<Vec<DisplayInfo>> {
     log::info!("wayland::get_displays() appelé, vérification de l'initialisation...");
-
-    // AUTOMATIC DISPLAY CHANGE DETECTION:
-    // Check if system displays have changed (e.g., Meta-N added)
-    let system_displays = scrap::wayland::display::get_displays();
-    let system_count = system_displays.displays.len();
-
-    use hbb_common::config::LocalConfig;
-    let cached_count: usize = LocalConfig::get_option("wayland-display-count")
-        .parse()
-        .unwrap_or(0);
-
-    if cached_count > 0 && system_count != cached_count {
-        log::warn!(
-            "Display count changed during runtime ({} → {}), reinitializing PipeWire...",
-            cached_count,
-            system_count
-        );
-
-        // Clear PipeWire state and restore_token to capture new displays
-        clear();
-        LocalConfig::set_option("wayland-restore-token".to_string(), "".to_string());
-        LocalConfig::set_option("wayland-display-count".to_string(), system_count.to_string());
-
-        log::info!("PipeWire cleared, will reinitialize on next check_init()");
-    }
-
     check_init().await?;
     let cap_map = CAP_DISPLAY_INFO.read().unwrap();
     log::info!("wayland::get_displays() CAP_DISPLAY_INFO contient {} entrées", cap_map.len());
