@@ -5,7 +5,7 @@ use evdev::{
     AttributeSet, EventType, InputEvent,
 };
 use hbb_common::{
-    allow_err, bail, log,
+    allow_err, anyhow, bail, log,
     tokio::{self, runtime::Runtime},
     ResultType,
 };
@@ -31,12 +31,30 @@ pub mod client {
             Ok(Self { conn, rt })
         }
 
+        fn reconnect(&mut self) -> ResultType<()> {
+            log::info!("UInput keyboard: attempting IPC reconnect...");
+            self.conn = self.rt.block_on(ipc::connect(IPC_CONN_TIMEOUT, IPC_POSTFIX_KEYBOARD))?;
+            log::info!("UInput keyboard: IPC reconnected successfully");
+            Ok(())
+        }
+
         fn send(&mut self, data: Data) -> ResultType<()> {
-            self.rt.block_on(self.conn.send(&data))
+            match self.rt.block_on(self.conn.send(&data)) {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    log::warn!("UInput keyboard send failed ({}), reconnecting...", e);
+                    self.reconnect()?;
+                    self.rt.block_on(self.conn.send(&data))
+                }
+            }
         }
 
         fn send_get_key_state(&mut self, data: Data) -> ResultType<bool> {
-            self.rt.block_on(self.conn.send(&data))?;
+            if let Err(e) = self.rt.block_on(self.conn.send(&data)) {
+                log::warn!("UInput keyboard send_get_key_state failed ({}), reconnecting...", e);
+                self.reconnect()?;
+                self.rt.block_on(self.conn.send(&data))?;
+            }
 
             match self
                 .rt
@@ -118,8 +136,22 @@ pub mod client {
             Ok(Self { conn, rt })
         }
 
+        fn reconnect(&mut self) -> ResultType<()> {
+            log::info!("UInput mouse: attempting IPC reconnect...");
+            self.conn = self.rt.block_on(ipc::connect(IPC_CONN_TIMEOUT, IPC_POSTFIX_MOUSE))?;
+            log::info!("UInput mouse: IPC reconnected successfully");
+            Ok(())
+        }
+
         fn send(&mut self, data: Data) -> ResultType<()> {
-            self.rt.block_on(self.conn.send(&data))
+            match self.rt.block_on(self.conn.send(&data)) {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    log::warn!("UInput mouse send failed ({}), reconnecting...", e);
+                    self.reconnect()?;
+                    self.rt.block_on(self.conn.send(&data))
+                }
+            }
         }
 
         pub fn send_refresh(&mut self) -> ResultType<()> {
@@ -158,6 +190,262 @@ pub mod client {
         }
         fn mouse_scroll_y(&mut self, length: i32) {
             allow_err!(self.send(Data::Mouse(DataMouse::ScrollY(length))));
+        }
+    }
+
+    // =========================================================================
+    // Direct UInput: bypass IPC, write to /dev/uinput directly via raw ioctl.
+    // Only requires rw access to /dev/uinput (ACL). Does NOT need /dev/input/event* access.
+    // =========================================================================
+
+    pub struct DirectUInputKeyboard {
+        uinput_file: std::fs::File,
+    }
+
+    impl DirectUInputKeyboard {
+        pub fn new() -> ResultType<Self> {
+            use std::os::unix::fs::OpenOptionsExt;
+            use std::os::unix::io::AsRawFd;
+            use super::mouce::*;
+
+            let file = std::fs::File::options()
+                .write(true)
+                .custom_flags(O_NONBLOCK)
+                .open("/dev/uinput")
+                .map_err(|e| anyhow::anyhow!("Cannot open /dev/uinput: {}", e))?;
+            let fd = file.as_raw_fd();
+
+            unsafe {
+                // Enable EV_KEY
+                ioctl(fd, UI_SET_EVBIT, EV_KEY);
+                // Enable EV_MSC for scan codes
+                ioctl(fd, UI_SET_EVBIT, EV_MSC);
+                ioctl(fd, UI_SET_MSCBIT, MSC_SCAN);
+                // Enable EV_LED
+                ioctl(fd, UI_SET_EVBIT, EV_LED);
+                ioctl(fd, UI_SET_LEDBIT, LED_NUML);
+                ioctl(fd, UI_SET_LEDBIT, LED_CAPSL);
+                ioctl(fd, UI_SET_LEDBIT, LED_SCROLLL);
+
+                // Register all keys (KEY_ESC=1 through BTN_TRIGGER_HAPPY40=0x2e7)
+                for i in 1..=0x2e7i32 {
+                    ioctl(fd, UI_SET_KEYBIT, i);
+                }
+            }
+
+            let mut usetup = UInputSetup {
+                id: InputId {
+                    bustype: BUS_USB,
+                    vendor: 0x2222,
+                    product: 0x4444,
+                    version: 0,
+                },
+                name: [0; UINPUT_MAX_NAME_SIZE],
+                ff_effects_max: 0,
+            };
+            let name = b"RustDesk Direct Keyboard";
+            for (i, &ch) in name.iter().enumerate() {
+                if i < UINPUT_MAX_NAME_SIZE {
+                    usetup.name[i] = ch as std::os::raw::c_char;
+                }
+            }
+
+            unsafe {
+                ioctl(fd, UI_DEV_SETUP, &usetup);
+                ioctl(fd, UI_DEV_CREATE);
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            log::info!("DirectUInput keyboard created (raw ioctl, no /dev/input/event* needed)");
+            Ok(Self { uinput_file: file })
+        }
+
+        fn emit_key(&mut self, code: u16, value: i32) {
+            use std::os::unix::io::AsRawFd;
+            use super::mouce::*;
+            let fd = self.uinput_file.as_raw_fd();
+            let mut ev = InputEvent {
+                time: TimeVal { tv_sec: 0, tv_usec: 0 },
+                r#type: EV_KEY as u16,
+                code,
+                value,
+            };
+            unsafe {
+                write(fd, &mut ev, std::mem::size_of::<InputEvent>());
+            }
+            // SYN_REPORT
+            let mut syn = InputEvent {
+                time: TimeVal { tv_sec: 0, tv_usec: 0 },
+                r#type: EV_SYN as u16,
+                code: 0,
+                value: 0,
+            };
+            unsafe {
+                write(fd, &mut syn, std::mem::size_of::<InputEvent>());
+            }
+        }
+    }
+
+    impl KeyboardControllable for DirectUInputKeyboard {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn as_mut_any(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+
+        fn get_key_state(&mut self, _key: Key) -> bool {
+            // Without /dev/input/event* access, we cannot read key/LED state.
+            // Return false — this is best-effort. The remote client tracks
+            // modifier state itself.
+            false
+        }
+
+        fn key_sequence(&mut self, _sequence: &str) {
+            // ignored, same as IPC path
+        }
+
+        fn key_down(&mut self, key: Key) -> enigo::ResultType {
+            match key {
+                Key::Raw(code) => {
+                    self.emit_key((code - 8) as u16, 1);
+                }
+                _ => {
+                    if let Ok((k, is_shift)) = super::service::map_key(&key) {
+                        if is_shift {
+                            self.emit_key(evdev::Key::KEY_LEFTSHIFT.code(), 1);
+                        }
+                        self.emit_key(k.code(), 1);
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        fn key_up(&mut self, key: Key) {
+            match key {
+                Key::Raw(code) => {
+                    self.emit_key((code - 8) as u16, 0);
+                }
+                _ => {
+                    if let Ok((k, _)) = super::service::map_key(&key) {
+                        self.emit_key(k.code(), 0);
+                    }
+                }
+            }
+        }
+
+        fn key_click(&mut self, key: Key) {
+            match key {
+                Key::Raw(code) => {
+                    self.emit_key((code - 8) as u16, 1);
+                    self.emit_key((code - 8) as u16, 0);
+                }
+                _ => {
+                    if let Ok((k, _)) = super::service::map_key(&key) {
+                        self.emit_key(k.code(), 1);
+                        self.emit_key(k.code(), 0);
+                    }
+                }
+            }
+        }
+    }
+
+    pub struct DirectUInputMouse {
+        mouse: super::mouce::UInputMouseManager,
+    }
+
+    impl DirectUInputMouse {
+        pub fn new(rng_x: (i32, i32), rng_y: (i32, i32)) -> ResultType<Self> {
+            let mouse = super::mouce::UInputMouseManager::new(rng_x, rng_y)
+                .map_err(|e| anyhow::anyhow!("Failed to create direct UInput mouse: {}", e))?;
+            log::info!("DirectUInput mouse created (no IPC, direct /dev/uinput)");
+            Ok(Self { mouse })
+        }
+
+        pub fn refresh_resolution(
+            &mut self,
+            rng_x: (i32, i32),
+            rng_y: (i32, i32),
+        ) -> ResultType<()> {
+            self.mouse = super::mouce::UInputMouseManager::new(rng_x, rng_y)
+                .map_err(|e| anyhow::anyhow!("Failed to recreate direct UInput mouse: {}", e))?;
+            log::info!(
+                "DirectUInput mouse refreshed ({}, {}) x ({}, {})",
+                rng_x.0,
+                rng_x.1,
+                rng_y.0,
+                rng_y.1
+            );
+            Ok(())
+        }
+    }
+
+    impl MouseControllable for DirectUInputMouse {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn as_mut_any(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+
+        fn mouse_move_to(&mut self, x: i32, y: i32) {
+            allow_err!(self.mouse.move_to(x as usize, y as usize));
+        }
+        fn mouse_move_relative(&mut self, x: i32, y: i32) {
+            allow_err!(self.mouse.move_relative(x, y));
+        }
+        fn mouse_down(&mut self, button: MouseButton) -> enigo::ResultType {
+            let btn = match button {
+                MouseButton::Left => super::mouce::MouseButton::Left,
+                MouseButton::Middle => super::mouce::MouseButton::Middle,
+                MouseButton::Right => super::mouce::MouseButton::Right,
+                _ => return Ok(()),
+            };
+            allow_err!(self.mouse.press_button(&btn));
+            Ok(())
+        }
+        fn mouse_up(&mut self, button: MouseButton) {
+            let btn = match button {
+                MouseButton::Left => super::mouce::MouseButton::Left,
+                MouseButton::Middle => super::mouce::MouseButton::Middle,
+                MouseButton::Right => super::mouce::MouseButton::Right,
+                _ => return,
+            };
+            allow_err!(self.mouse.release_button(&btn));
+        }
+        fn mouse_click(&mut self, button: MouseButton) {
+            let btn = match button {
+                MouseButton::Left => super::mouce::MouseButton::Left,
+                MouseButton::Middle => super::mouce::MouseButton::Middle,
+                MouseButton::Right => super::mouce::MouseButton::Right,
+                _ => return,
+            };
+            allow_err!(self.mouse.click_button(&btn));
+        }
+        fn mouse_scroll_x(&mut self, length: i32) {
+            let scroll = if length < 0 {
+                super::mouce::ScrollDirection::Left
+            } else {
+                super::mouce::ScrollDirection::Right
+            };
+            let mut length = length.abs();
+            for _ in 0..length {
+                allow_err!(self.mouse.scroll_wheel(&scroll));
+            }
+        }
+        fn mouse_scroll_y(&mut self, length: i32) {
+            let scroll = if length < 0 {
+                super::mouce::ScrollDirection::Up
+            } else {
+                super::mouce::ScrollDirection::Down
+            };
+            let mut length = length.abs();
+            for _ in 0..length {
+                allow_err!(self.mouse.scroll_wheel(&scroll));
+            }
         }
     }
 
@@ -364,7 +652,7 @@ pub mod service {
         static ref RESOLUTION: Mutex<((i32, i32), (i32, i32))> = Mutex::new(((0, 0), (0, 0)));
     }
 
-    fn create_uinput_keyboard() -> ResultType<VirtualDevice> {
+    pub fn create_uinput_keyboard() -> ResultType<VirtualDevice> {
         // TODO: ensure keys here
         let mut keys = AttributeSet::<evdev::Key>::new();
         for i in evdev::Key::KEY_ESC.code()..(evdev::Key::BTN_TRIGGER_HAPPY40.code() + 1) {
@@ -770,7 +1058,7 @@ pub mod service {
 }
 
 // https://github.com/emrebicer/mouce
-mod mouce {
+pub(crate) mod mouce {
     use std::{
         fs::File,
         io::{Error, ErrorKind, Result},
@@ -786,18 +1074,22 @@ mod mouce {
     pub const O_NONBLOCK: c_int = 2048;
 
     /// ioctl and uinput definitions
-    const UI_ABS_SETUP: c_ulong = 1075598596;
-    const UI_SET_EVBIT: c_ulong = 1074025828;
-    const UI_SET_KEYBIT: c_ulong = 1074025829;
-    const UI_SET_RELBIT: c_ulong = 1074025830;
-    const UI_SET_ABSBIT: c_ulong = 1074025831;
-    const UI_DEV_SETUP: c_ulong = 1079792899;
-    const UI_DEV_CREATE: c_ulong = 21761;
-    const UI_DEV_DESTROY: c_uint = 21762;
+    pub(super) const UI_ABS_SETUP: c_ulong = 1075598596;
+    pub(super) const UI_SET_EVBIT: c_ulong = 1074025828;
+    pub(super) const UI_SET_KEYBIT: c_ulong = 1074025829;
+    pub(super) const UI_SET_RELBIT: c_ulong = 1074025830;
+    pub(super) const UI_SET_ABSBIT: c_ulong = 1074025831;
+    pub(super) const UI_SET_MSCBIT: c_ulong = 1074025832;
+    pub(super) const UI_SET_LEDBIT: c_ulong = 1074025841;
+    pub(super) const UI_DEV_SETUP: c_ulong = 1079792899;
+    pub(super) const UI_DEV_CREATE: c_ulong = 21761;
+    pub(super) const UI_DEV_DESTROY: c_uint = 21762;
 
     pub const EV_KEY: c_int = 0x01;
     pub const EV_REL: c_int = 0x02;
     pub const EV_ABS: c_int = 0x03;
+    pub(super) const EV_MSC: c_int = 0x04;
+    pub(super) const EV_LED: c_int = 0x11;
     pub const REL_X: c_uint = 0x00;
     pub const REL_Y: c_uint = 0x01;
     pub const ABS_X: c_uint = 0x00;
@@ -812,28 +1104,32 @@ mod mouce {
     pub const BTN_FORWARD: c_int = 0x115;
     pub const BTN_BACK: c_int = 0x116;
     pub const BTN_TASK: c_int = 0x117;
+    pub(super) const MSC_SCAN: c_int = 0x04;
+    pub(super) const LED_NUML: c_int = 0x00;
+    pub(super) const LED_CAPSL: c_int = 0x01;
+    pub(super) const LED_SCROLLL: c_int = 0x02;
     const SYN_REPORT: c_int = 0x00;
-    const EV_SYN: c_int = 0x00;
-    const BUS_USB: c_ushort = 0x03;
+    pub(super) const EV_SYN: c_int = 0x00;
+    pub(super) const BUS_USB: c_ushort = 0x03;
 
     /// uinput types
     #[repr(C)]
-    struct UInputSetup {
-        id: InputId,
-        name: [c_char; UINPUT_MAX_NAME_SIZE],
-        ff_effects_max: c_ulong,
+    pub(super) struct UInputSetup {
+        pub id: InputId,
+        pub name: [c_char; UINPUT_MAX_NAME_SIZE],
+        pub ff_effects_max: c_ulong,
     }
 
     #[repr(C)]
-    struct InputId {
-        bustype: c_ushort,
-        vendor: c_ushort,
-        product: c_ushort,
-        version: c_ushort,
+    pub(super) struct InputId {
+        pub bustype: c_ushort,
+        pub vendor: c_ushort,
+        pub product: c_ushort,
+        pub version: c_ushort,
     }
 
     #[repr(C)]
-    pub struct InputEvent {
+    pub(super) struct InputEvent {
         pub time: TimeVal,
         pub r#type: c_ushort,
         pub code: c_ushort,
@@ -841,7 +1137,7 @@ mod mouce {
     }
 
     #[repr(C)]
-    pub struct TimeVal {
+    pub(super) struct TimeVal {
         pub tv_sec: c_ulong,
         pub tv_usec: c_ulong,
     }
@@ -863,8 +1159,8 @@ mod mouce {
     }
 
     extern "C" {
-        fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
-        fn write(fd: c_int, buf: *mut InputEvent, count: usize) -> c_long;
+        pub(super) fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
+        pub(super) fn write(fd: c_int, buf: *mut InputEvent, count: usize) -> c_long;
     }
 
     #[derive(Debug, Copy, Clone)]
@@ -887,7 +1183,7 @@ mod mouce {
         Left,
     }
 
-    const UINPUT_MAX_NAME_SIZE: usize = 80;
+    pub(super) const UINPUT_MAX_NAME_SIZE: usize = 80;
 
     pub struct UInputMouseManager {
         uinput_file: File,
