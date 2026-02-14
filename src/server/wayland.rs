@@ -111,6 +111,12 @@ pub(super) fn is_inited() -> Option<Message> {
         None
     } else {
         if CAP_DISPLAY_INFO.read().unwrap().is_empty() {
+            // On GNOME with Mutter, RecordMonitor will handle capture automatically
+            // without any user dialog, so don't show the "select screen" message.
+            if scrap::wayland::mutter_capture::is_mutter_available() {
+                log::debug!("is_inited: CAP_DISPLAY_INFO empty but Mutter available, skipping dialog");
+                return None;
+            }
             let mut msg_out = Message::new();
             let res = MessageBox {
                 msgtype: "nook-nocancel-hasclose".to_owned(),
@@ -150,6 +156,7 @@ pub(super) async fn check_init() -> ResultType<()> {
                 }
             }
 
+            {
             let mut lock = CAP_DISPLAY_INFO.write().unwrap();
             if lock.is_empty() {
                 // Check if PipeWire is already initialized to prevent duplicate recorder creation
@@ -190,7 +197,34 @@ pub(super) async fn check_init() -> ResultType<()> {
                 log::info!("wayland::check_init() système détecté {} displays", system_count);
                 log::info!("wayland::check_init() début initialisation PipeWire...");
                 let mut all = Display::all()?;
-                log::info!("wayland::check_init() Display::all() retourné {} displays (sélectionnés)", all.len());
+                log::info!("wayland::check_init() Display::all() retourné {} displays (from portal)", all.len());
+
+                // Discover active Mutter RecordVirtual virtual displays (only if EVDI is NOT used,
+                // since EVDI creates real DRM devices that Mutter detects as connectors).
+                if !is_x11() && !crate::virtual_display_manager::linux_evdi::is_supported() {
+                    let vds = crate::virtual_display_manager::linux_wayland::get_active_virtual_displays();
+                    if !vds.is_empty() {
+                        let nodes: Vec<(u32, usize, usize)> = vds
+                            .iter()
+                            .map(|vd| (vd.node_id, vd.width as usize, vd.height as usize))
+                            .collect();
+                        match Display::from_virtual_nodes(&nodes) {
+                            Ok(vd_displays) => {
+                                log::info!(
+                                    "wayland::check_init() adding {} Mutter virtual displays",
+                                    vd_displays.len()
+                                );
+                                all.extend(vd_displays);
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "wayland::check_init() failed to create virtual display capturers: {}",
+                                    e
+                                );
+                            }
+                        }
+                    }
+                }
 
                 // Log each display for debugging
                 for (i, display) in all.iter().enumerate() {
@@ -206,7 +240,9 @@ pub(super) async fn check_init() -> ResultType<()> {
                 }
                 log::debug!("Attempting to fix logical size with try_fix_logical_size()");
                 try_fix_logical_size(&mut all);
-                *PIPEWIRE_INITIALIZED.write().unwrap() = true;
+                // NOTE: PIPEWIRE_INITIALIZED is set to true AFTER all capturers are created (below).
+                // Setting it before would cause a bug: if Capturer::new() fails,
+                // PIPEWIRE_INITIALIZED=true but CAP_DISPLAY_INFO is empty, blocking all future inits.
                 let num = all.len();
                 let primary = super::display_service::get_primary_2(&all);
                 super::display_service::check_update_displays(&all);
@@ -229,24 +265,80 @@ pub(super) async fn check_init() -> ResultType<()> {
                     num_cpus::get()
                 );
 
-                // Create individual CapDisplayInfo for each display with its own capturer
+                // Create individual CapDisplayInfo for each display with its own capturer.
+                // Continue even if some capturers fail — partial capture is better than none.
                 for (idx, display) in all.into_iter().enumerate() {
-                    let capturer =
-                        Box::into_raw(Box::new(Capturer::new(display).with_context(|| {
-                            format!("Failed to create capturer for display {}", idx)
-                        })?));
-                    let capturer = CapturerPtr(capturer);
+                    match Capturer::new(display) {
+                        Ok(capturer) => {
+                            let capturer = Box::into_raw(Box::new(capturer));
+                            let capturer = CapturerPtr(capturer);
 
-                    let cap_display_info = Box::into_raw(Box::new(CapDisplayInfo {
-                        rects: rects.clone(),
-                        displays: displays.clone(),
-                        num,
-                        primary,
-                        current: idx,
-                        capturer,
-                    }));
+                            let cap_display_info = Box::into_raw(Box::new(CapDisplayInfo {
+                                rects: rects.clone(),
+                                displays: displays.clone(),
+                                num,
+                                primary,
+                                current: idx,
+                                capturer,
+                            }));
 
-                    lock.insert(idx, cap_display_info as u64);
+                            lock.insert(idx, cap_display_info as u64);
+                            log::info!("wayland::check_init() capturer créé pour display {}", idx);
+                        }
+                        Err(e) => {
+                            log::error!("wayland::check_init() FAILED to create capturer for display {}: {}", idx, e);
+                        }
+                    }
+                }
+                if lock.is_empty() {
+                    log::error!("wayland::check_init() NO capturers created for any display!");
+                    bail!("Failed to create any capturer");
+                }
+                // Mark as initialized ONLY after at least one capturer is successfully created.
+                *PIPEWIRE_INITIALIZED.write().unwrap() = true;
+                log::info!("wayland::check_init() terminé: {} displays initialisés avec succès", lock.len());
+            }
+            } // drop CAP_DISPLAY_INFO write lock
+
+            // Compute final mouse bounds from actual display layout (including virtual displays).
+            // Must be done after lock is released since update_mouse_resolution is async.
+            let final_mouse_bounds: Option<(i32, i32, i32, i32)> = {
+                let lock = CAP_DISPLAY_INFO.read().unwrap();
+                if !lock.is_empty() {
+                    // Reconstruct bounds from the stored CapDisplayInfo rects
+                    let mut minx = i32::MAX;
+                    let mut miny = i32::MAX;
+                    let mut maxx = i32::MIN;
+                    let mut maxy = i32::MIN;
+                    for (_, &cap_ptr) in lock.iter() {
+                        let cap = unsafe { &*(cap_ptr as *const CapDisplayInfo) };
+                        for &((rx, ry), rw, rh) in &cap.rects {
+                            minx = minx.min(rx);
+                            miny = miny.min(ry);
+                            maxx = maxx.max(rx + rw as i32);
+                            maxy = maxy.max(ry + rh as i32);
+                        }
+                        break; // All CapDisplayInfo share the same rects
+                    }
+                    if minx < maxx && miny < maxy {
+                        Some((minx, maxx, miny, maxy))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            if let Some((minx, maxx, miny, maxy)) = final_mouse_bounds {
+                if crate::input_service::wayland_use_uinput() {
+                    log::info!(
+                        "update mouse resolution (post-enum): ({}, {}), ({}, {})",
+                        minx, maxx, miny, maxy
+                    );
+                    allow_err!(
+                        input_service::update_mouse_resolution(minx, maxx, miny, maxy).await
+                    );
                 }
             }
         }
@@ -256,7 +348,10 @@ pub(super) async fn check_init() -> ResultType<()> {
 
 pub(super) async fn get_displays() -> ResultType<Vec<DisplayInfo>> {
     log::info!("wayland::get_displays() appelé, vérification de l'initialisation...");
-    check_init().await?;
+    if let Err(e) = check_init().await {
+        log::error!("wayland::get_displays() check_init() FAILED: {}", e);
+        return Err(e);
+    }
     let cap_map = CAP_DISPLAY_INFO.read().unwrap();
     log::info!("wayland::get_displays() CAP_DISPLAY_INFO contient {} entrées", cap_map.len());
     if let Some(addr) = cap_map.values().next() {
@@ -289,7 +384,9 @@ pub fn clear() {
     if is_x11() {
         return;
     }
+    log::info!("wayland::clear() destroying capturers and resetting state");
     let mut write_lock = CAP_DISPLAY_INFO.write().unwrap();
+    let count = write_lock.len();
     for (_, addr) in write_lock.iter() {
         let cap_display_info: *mut CapDisplayInfo = *addr as _;
         unsafe {
@@ -299,8 +396,13 @@ pub fn clear() {
     }
     write_lock.clear();
 
+    // Close Mutter RecordMonitor sessions so they get recreated on next init
+    // (needed when display configuration changes, e.g. EVDI virtual display added/removed)
+    scrap::wayland::pipewire::close_mutter_sessions();
+
     // Reset PipeWire initialization flag to allow recreation on next init
     *PIPEWIRE_INITIALIZED.write().unwrap() = false;
+    log::info!("wayland::clear() done: destroyed {} capturers, PIPEWIRE_INITIALIZED=false", count);
 }
 
 pub(super) fn get_capturer_for_display(

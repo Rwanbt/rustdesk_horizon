@@ -596,20 +596,40 @@ static mut VIRTUAL_INPUT_MTX: Mutex<()> = Mutex::new(());
 #[cfg(target_os = "macos")]
 static mut VIRTUAL_INPUT_STATE: Option<VirtualInputState> = None;
 
-// First call set_uinput() will create keyboard and mouse clients.
-// The clients are ipc connections that must live shorter than tokio runtime.
-// Thus this function must not be called in a temporary runtime.
+// Create UInput keyboard and mouse for Wayland input injection.
+// Tries direct /dev/uinput access first (no IPC, no service dependency).
+// Falls back to IPC to the --service process if direct access fails.
 #[cfg(target_os = "linux")]
 pub async fn setup_uinput(minx: i32, maxx: i32, miny: i32, maxy: i32) -> ResultType<()> {
-    // Keyboard and mouse both open /dev/uinput
-    // TODO: Make sure there's no race
+    // Try direct UInput first: write to /dev/uinput without IPC.
+    // This works when user has rw access via ACL or input group.
+    match try_setup_direct_uinput(minx, maxx, miny, maxy) {
+        Ok(()) => return Ok(()),
+        Err(e) => {
+            log::warn!("Direct UInput failed ({}), falling back to IPC service", e);
+        }
+    }
+
+    // Fallback: IPC to --service process (requires rustdesk.service running)
     set_uinput_resolution(minx, maxx, miny, maxy).await?;
 
     let keyboard = super::uinput::client::UInputKeyboard::new().await?;
-    log::info!("UInput keyboard created");
+    log::info!("UInput keyboard created (IPC)");
     let mouse = super::uinput::client::UInputMouse::new().await?;
-    log::info!("UInput mouse created");
+    log::info!("UInput mouse created (IPC)");
 
+    ENIGO
+        .lock()
+        .unwrap()
+        .set_custom_keyboard(Box::new(keyboard));
+    ENIGO.lock().unwrap().set_custom_mouse(Box::new(mouse));
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn try_setup_direct_uinput(minx: i32, maxx: i32, miny: i32, maxy: i32) -> ResultType<()> {
+    let keyboard = super::uinput::client::DirectUInputKeyboard::new()?;
+    let mouse = super::uinput::client::DirectUInputMouse::new((minx, maxx), (miny, maxy))?;
     ENIGO
         .lock()
         .unwrap()
@@ -649,6 +669,21 @@ pub async fn setup_rdp_input() -> ResultType<(), Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "linux")]
 pub async fn update_mouse_resolution(minx: i32, maxx: i32, miny: i32, maxy: i32) -> ResultType<()> {
+    // Try direct UInput mouse refresh first
+    {
+        let mut en = ENIGO.lock().unwrap();
+        if let Some(mouse) = en.get_custom_mouse() {
+            if let Some(dm) = mouse
+                .as_mut_any()
+                .downcast_mut::<super::uinput::client::DirectUInputMouse>()
+            {
+                allow_err!(dm.refresh_resolution((minx, maxx), (miny, maxy)));
+                return Ok(());
+            }
+        }
+    }
+
+    // IPC path fallback
     set_uinput_resolution(minx, maxx, miny, maxy).await?;
 
     std::thread::spawn(|| {
@@ -1900,7 +1935,7 @@ async fn send_sas() -> ResultType<()> {
 #[inline]
 #[cfg(target_os = "linux")]
 pub fn wayland_use_uinput() -> bool {
-    !crate::platform::is_x11() && crate::is_server()
+    !crate::platform::is_x11() && (crate::is_server() || crate::is_server_running())
 }
 
 #[inline]
