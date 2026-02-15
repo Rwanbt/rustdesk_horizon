@@ -179,8 +179,13 @@ pub fn prepare_evdi() {
         Ok(content) => !content.contains("MODE="),
         Err(_) => true,
     };
+    // modprobe.d rule ensures chmod runs automatically on every module load
+    let need_modprobe_rule = match std::fs::read_to_string("/etc/modprobe.d/evdi-permissions.conf") {
+        Ok(content) => !content.contains("chmod"),
+        Err(_) => true,
+    };
 
-    if !need_packages && !need_module && !need_sysfs && !need_udev {
+    if !need_packages && !need_module && !need_sysfs && !need_udev && !need_modprobe_rule {
         log::info!("EVDI: everything already configured");
         return;
     }
@@ -214,6 +219,13 @@ pub fn prepare_evdi() {
         cmds.push("test -e /sys/devices/evdi/add && chmod 0666 /sys/devices/evdi/add /sys/devices/evdi/remove_all || true".to_string());
     }
 
+    if need_modprobe_rule {
+        log::info!("EVDI: will install modprobe.d rule for persistent sysfs permissions");
+        cmds.push(
+            "echo 'install evdi /sbin/modprobe --ignore-install evdi; chmod 0666 /sys/devices/evdi/add /sys/devices/evdi/remove_all' > /etc/modprobe.d/evdi-permissions.conf".to_string()
+        );
+    }
+
     if need_udev {
         log::info!("EVDI: will install udev rule for DRI device ACLs");
         cmds.push(
@@ -227,10 +239,32 @@ pub fn prepare_evdi() {
 
     log::info!("EVDI: running privileged setup ({} commands)", cmds.len());
     let combined = cmds.join(" && ");
-    if is_root() {
-        let _ = run_cmds(&combined);
+    let success = if is_root() {
+        std::process::Command::new("sh")
+            .args(["-c", &combined])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     } else {
-        run_cmds_privileged(&combined);
+        run_cmds_privileged(&combined)
+    };
+
+    if !success || need_sysfs {
+        // Verify sysfs permissions actually got set
+        match std::fs::OpenOptions::new().write(true).open("/sys/devices/evdi/add") {
+            Ok(_) => log::info!("EVDI: sysfs permissions OK"),
+            Err(_) => {
+                log::warn!("EVDI: sysfs permissions still restricted — trying pkexec fallback");
+                let _ = std::process::Command::new("pkexec")
+                    .args(["chmod", "0666", "/sys/devices/evdi/add", "/sys/devices/evdi/remove_all"])
+                    .status();
+                // Final check
+                match std::fs::OpenOptions::new().write(true).open("/sys/devices/evdi/add") {
+                    Ok(_) => log::info!("EVDI: sysfs permissions OK (via pkexec)"),
+                    Err(e) => log::error!("EVDI: /sys/devices/evdi/add still not writable: {}. Run: sudo chmod 0666 /sys/devices/evdi/add /sys/devices/evdi/remove_all", e),
+                }
+            }
+        }
     }
 
     log::info!("EVDI: preparation complete");

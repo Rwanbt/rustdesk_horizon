@@ -272,6 +272,127 @@ pub fn create_sessions_for_all_displays() -> Result<Vec<MutterCaptureSession>, S
     Ok(sessions)
 }
 
+/// Create RecordMonitor sessions for ALL physical displays on a SINGLE shared D-Bus connection.
+/// This fixes the node_id duplication bug: with separate connections per session,
+/// the PipeWireStreamAdded signal handler was shared and all sessions got the same node_id.
+/// With a shared connection, each session's signal is properly dispatched.
+/// Returns (connection, sessions) — the connection MUST be kept alive for sessions to persist.
+pub fn create_all_sessions_on_shared_conn() -> Result<(SyncConnection, Vec<MutterCaptureSession>), String> {
+    let conn = SyncConnection::new_session()
+        .map_err(|e| format!("Cannot connect to session D-Bus: {}", e))?;
+
+    let connectors = get_all_physical_connectors()?;
+    let mut sessions = Vec::new();
+
+    for connector in &connectors {
+        // Skip Meta- virtual outputs
+        if connector.name.starts_with("Meta-") {
+            continue;
+        }
+
+        match create_capture_session_on(&conn, &connector.name) {
+            Ok(session) => {
+                tracing::info!("Capture session created for {} (node_id={})", connector.name, session.node_id);
+                sessions.push(session);
+            }
+            Err(e) => {
+                tracing::error!("Failed to create session for {}: {}", connector.name, e);
+            }
+        }
+    }
+
+    if sessions.is_empty() {
+        return Err("Failed to create any capture sessions".to_string());
+    }
+
+    tracing::info!("Mutter: created {} sessions on shared D-Bus connection", sessions.len());
+    Ok((conn, sessions))
+}
+
+/// Create a RecordMonitor session on an existing shared D-Bus connection.
+/// The connection MUST stay alive for the session to persist.
+fn create_capture_session_on(conn: &SyncConnection, connector: &str) -> Result<MutterCaptureSession, String> {
+    tracing::info!("Mutter: creating capture session for {} (shared conn)", connector);
+
+    let sc = conn.with_proxy(
+        "org.gnome.Mutter.ScreenCast",
+        "/org/gnome/Mutter/ScreenCast",
+        Duration::from_millis(5000),
+    );
+
+    let (session_path,): (dbus::Path<'static>,) = sc
+        .method_call(
+            "org.gnome.Mutter.ScreenCast",
+            "CreateSession",
+            (PropMap::new(),),
+        )
+        .map_err(|e| format!("CreateSession failed: {}", e))?;
+
+    let session_proxy = conn.with_proxy(
+        "org.gnome.Mutter.ScreenCast",
+        session_path.clone(),
+        Duration::from_millis(5000),
+    );
+
+    let mut props = PropMap::new();
+    props.insert(
+        "cursor-mode".to_string(),
+        Variant(Box::new(1u32)), // 1 = embedded cursor
+    );
+
+    let (stream_path,): (dbus::Path<'static>,) = session_proxy
+        .method_call(
+            "org.gnome.Mutter.ScreenCast.Session",
+            "RecordMonitor",
+            (connector.to_string(), props),
+        )
+        .map_err(|e| format!("RecordMonitor failed for {}: {}", connector, e))?;
+
+    let node_id: Arc<Mutex<Option<u32>>> = Arc::new(Mutex::new(None));
+    let node_id_cb = node_id.clone();
+
+    let mut rule = MatchRule::new();
+    rule.path = Some(stream_path.clone());
+    rule.msg_type = Some(MessageType::Signal);
+    rule.interface = Some("org.gnome.Mutter.ScreenCast.Stream".into());
+    rule.member = Some("PipeWireStreamAdded".into());
+
+    conn.add_match(rule, move |_: (), _, msg| {
+        if let Some(nid) = msg.get1::<u32>() {
+            *node_id_cb.lock().unwrap() = Some(nid);
+            tracing::info!("Mutter: PipeWire node_id = {} (shared conn)", nid);
+        }
+        true
+    })
+    .map_err(|e| format!("Failed to add match rule: {}", e))?;
+
+    session_proxy
+        .method_call::<(), _, _, _>("org.gnome.Mutter.ScreenCast.Session", "Start", ())
+        .map_err(|e| format!("Session Start failed: {}", e))?;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        conn.process(Duration::from_millis(100))
+            .map_err(|e| format!("D-Bus processing error: {}", e))?;
+
+        if let Some(nid) = *node_id.lock().unwrap() {
+            return Ok(MutterCaptureSession {
+                connector: connector.to_string(),
+                session_path,
+                stream_path,
+                node_id: nid,
+            });
+        }
+
+        if std::time::Instant::now() > deadline {
+            return Err(format!(
+                "Timeout waiting for PipeWireStreamAdded signal for {}",
+                connector
+            ));
+        }
+    }
+}
+
 /// Stop a Mutter capture session
 pub fn stop_session(session_path: &dbus::Path<'static>) -> Result<(), String> {
     let conn = SyncConnection::new_session()
