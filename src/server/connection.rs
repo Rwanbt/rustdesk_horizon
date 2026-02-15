@@ -3684,11 +3684,11 @@ impl Connection {
                     Ok(Ok(())) => {
                         self.virtual_display_indices.push(t.display);
 
-                        // Sur Wayland, le mécanisme check_display_changed() est désactivé,
-                        // ET la liste des displays dans CAP_DISPLAY_INFO est figée à l'initialisation.
-                        // Il faut forcer une réinitialisation de PipeWire pour rescanner les displays.
-                        // Note: PipeWire reinit removed - causes SIGSEGV during active connection
-                        // The virtual display is already handled by Mutter ScreenCast backend
+                        // Trigger SWITCH on all video services to reinitialize PipeWire
+                        // and discover the new virtual display.
+                        // Flow: SWITCH → clear() → check_init() → get_capturables()
+                        // get_capturables_via_mutter() detects connector change and recreates sessions.
+                        self.refresh_video_display(None);
                     }
                     Ok(Err(e)) => {
                         log::error!("Failed to plug in virtual display: {}", e);
@@ -3715,7 +3715,8 @@ impl Connection {
                 Ok(Ok(())) => {
                     self.virtual_display_indices.retain(|&i| i != t.display);
 
-                    // Note: PipeWire reinit removed - causes SIGSEGV during active connection
+                    // Trigger SWITCH to reinitialize PipeWire without the removed display
+                    self.refresh_video_display(None);
                 }
                 Ok(Err(e)) => {
                     log::error!("Failed to plug out virtual display {}: {}", t.display, e);

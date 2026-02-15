@@ -124,6 +124,6 @@ impl Display {
     }
 
     pub fn name(&self) -> String {
-        "".to_owned()
+        self.0.name.clone()
     }
 }

@@ -32,8 +32,17 @@ use super::remote_desktop_portal::OrgFreedesktopPortalRemoteDesktop as remote_de
 use super::request_portal::OrgFreedesktopPortalRequestResponse;
 use super::screencast_portal::OrgFreedesktopPortalScreenCast as screencast_portal;
 
+/// Persistent storage for Mutter RecordMonitor sessions.
+/// The D-Bus connection MUST stay alive — if dropped, Mutter destroys the sessions
+/// and the PipeWire nodes disappear.
+struct MutterScreenCastInfo {
+    conn: SyncConnection,
+    sessions: Vec<super::mutter_capture::MutterCaptureSession>,
+}
+
 lazy_static! {
     pub static ref RDP_SESSION_INFO: Mutex<Option<RdpSessionInfo>> = Mutex::new(None);
+    static ref MUTTER_SCREENCAST_INFO: Mutex<Option<MutterScreenCastInfo>> = Mutex::new(None);
 }
 
 #[derive(Serialize, Deserialize)]
@@ -147,21 +156,22 @@ impl Error for GStreamerError {}
 
 #[derive(Clone)]
 pub struct PipeWireCapturable {
-    // connection needs to be kept alive for recording
-    dbus_conn: Arc<SyncConnection>,
-    fd: OwnedFd,
+    // connection needs to be kept alive for recording (None for RecordMonitor path)
+    dbus_conn: Option<Arc<SyncConnection>>,
+    fd: Option<OwnedFd>,
     path: u64,
     source_type: u64,
     pub primary: bool,
     pub position: (i32, i32),
     pub logical_size: (usize, usize),
     pub physical_size: (usize, usize),
+    pub name: String,
 }
 
 impl PipeWireCapturable {
     fn new(
-        conn: Arc<SyncConnection>,
-        fd: OwnedFd,
+        conn: Option<Arc<SyncConnection>>,
+        fd: Option<OwnedFd>,
         resolution: Arc<Mutex<Option<(usize, usize)>>>,
         stream: &PwStreamInfo,
     ) -> Self {
@@ -176,6 +186,7 @@ impl PipeWireCapturable {
             position: stream.position,
             logical_size: stream.size,
             physical_size: (0, 0),
+            name: String::new(),
         })
         .unwrap_or(stream.size);
         *resolution.lock().unwrap() = Some(physical_size);
@@ -188,6 +199,30 @@ impl PipeWireCapturable {
             position: stream.position,
             logical_size: stream.size,
             physical_size,
+            name: String::new(),
+        }
+    }
+
+    /// Create a PipeWireCapturable without a portal fd (for RecordMonitor path).
+    /// GStreamer pipewiresrc connects to PipeWire daemon directly (fd defaults to -1).
+    pub fn new_without_fd(
+        path: u64,
+        source_type: u64,
+        position: (i32, i32),
+        physical_size: (usize, usize),
+        logical_size: (usize, usize),
+        name: String,
+    ) -> Self {
+        Self {
+            dbus_conn: None,
+            fd: None,
+            path,
+            source_type,
+            primary: false,
+            position,
+            logical_size,
+            physical_size,
+            name,
         }
     }
 }
@@ -197,8 +232,8 @@ impl std::fmt::Debug for PipeWireCapturable {
         write!(
             f,
             "PipeWireCapturable {{dbus: {}, fd: {}, path: {}, source_type: {}}}",
-            self.dbus_conn.unique_name(),
-            self.fd.as_raw_fd(),
+            self.dbus_conn.as_ref().map_or("none".to_string(), |c| c.unique_name().to_string()),
+            self.fd.as_ref().map_or(-1, |f| f.as_raw_fd()),
             self.path,
             self.source_type
         )
@@ -265,10 +300,23 @@ pub struct PipeWireRecorder {
 
 impl PipeWireRecorder {
     pub fn new(capturable: PipeWireCapturable) -> ResultType<Self> {
+        // Ensure GStreamer is initialized before creating any pipeline.
+        // Previously this was only done in request_remote_desktop() (portal path),
+        // causing SIGSEGV when RecordMonitor path created pipelines without init.
+        unsafe {
+            if !INIT {
+                gstreamer::init()?;
+                INIT = true;
+            }
+        }
         let pipeline = gst::Pipeline::new(None);
 
         let src = gst::ElementFactory::make("pipewiresrc", None)?;
-        src.set_property("fd", &capturable.fd.as_raw_fd())?;
+        // Set fd only if we have a portal fd. Without fd (RecordMonitor path),
+        // pipewiresrc connects to PipeWire daemon directly (fd defaults to -1).
+        if let Some(ref fd) = capturable.fd {
+            src.set_property("fd", &fd.as_raw_fd())?;
+        }
         src.set_property("path", &format!("{}", capturable.path))?;
         src.set_property("keepalive_time", &1_000.as_raw_fd())?;
 
@@ -304,7 +352,7 @@ impl PipeWireRecorder {
         // Adding a short sleep period can also reduce the probability of crashes.
         debug!(
             "[gstreamer] Setting pipeline {} to PLAYING state...",
-            capturable.fd.as_raw_fd()
+            capturable.fd.as_ref().map_or(-1, |f| f.as_raw_fd())
         );
         pipeline.set_state(gst::State::Playing)?;
 
@@ -318,13 +366,13 @@ impl PipeWireRecorder {
                 (Ok(_), gst::State::Playing, _) => {
                     debug!(
                         "[gstreamer] Pipeline {} state confirmed as PLAYING.",
-                        capturable.fd.as_raw_fd()
+                        capturable.fd.as_ref().map_or(-1, |f| f.as_raw_fd())
                     );
                 }
                 (result, state, pending) => {
                     warn!(
                     "[gstreamer] Pipeline {} state change incomplete: result={:?}, state={:?}, pending={:?}",
-                    capturable.fd.as_raw_fd(), result, state, pending
+                    capturable.fd.as_ref().map_or(-1, |f| f.as_raw_fd()), result, state, pending
                 );
                 }
             }
@@ -931,20 +979,20 @@ fn on_start_response(
 }
 
 pub fn get_capturables() -> Result<Vec<PipeWireCapturable>, Box<dyn Error>> {
-    // TODO: Mutter RecordMonitor disabled temporarily - fd cloning issue needs fix
-    // if super::mutter_capture::is_mutter_available() {
-    //     match get_capturables_via_mutter() {
-    //         Ok(capturables) => {
-    //             debug!("Using Mutter ScreenCast RecordMonitor (NO user dialog)");
-    //             return Ok(capturables);
-    //         }
-    //         Err(e) => {
-    //             debug!("Mutter ScreenCast failed: {}, falling back to XDG portal", e);
-    //         }
-    //     }
-    // }
+    // Priority 1: Mutter RecordMonitor (GNOME only, ZERO user dialog)
+    if super::mutter_capture::is_mutter_available() {
+        match get_capturables_via_mutter() {
+            Ok(capturables) => {
+                debug!("Using Mutter ScreenCast RecordMonitor (NO user dialog)");
+                return Ok(capturables);
+            }
+            Err(e) => {
+                debug!("Mutter ScreenCast failed: {}, falling back to XDG portal", e);
+            }
+        }
+    }
 
-    // Use XDG Desktop Portal (optimized: types=5, multiple=true)
+    // Priority 2: XDG Desktop Portal fallback
     debug!("Using XDG Desktop Portal (optimized, dialog shows ONCE)");
     let mut rdp_connection = match RDP_SESSION_INFO.lock() {
         Ok(conn) => conn,
@@ -978,8 +1026,8 @@ pub fn get_capturables() -> Result<Vec<PipeWireCapturable>, Box<dyn Error>> {
         .iter()
         .map(|s| {
             PipeWireCapturable::new(
-                rdp_info.conn.clone(),
-                rdp_info.fd.clone(),
+                Some(rdp_info.conn.clone()),
+                Some(rdp_info.fd.clone()),
                 rdp_info.resolution.clone(),
                 s,
             )
@@ -987,65 +1035,102 @@ pub fn get_capturables() -> Result<Vec<PipeWireCapturable>, Box<dyn Error>> {
         .collect())
 }
 
-/// Get capturables via Mutter ScreenCast RecordMonitor (GNOME only, no user dialog)
-/// This bypasses the XDG Desktop Portal completely and captures ALL physical displays automatically
+/// Get capturables via Mutter ScreenCast RecordMonitor (GNOME only, no user dialog).
+/// Sessions are stored persistently in MUTTER_SCREENCAST_INFO and reused across connections.
+/// GStreamer pipewiresrc connects to PipeWire directly (no portal fd needed).
 fn get_capturables_via_mutter() -> Result<Vec<PipeWireCapturable>, Box<dyn Error>> {
     debug!("Attempting Mutter ScreenCast RecordMonitor (automatic, no dialog)...");
 
-    // Get ALL physical display connectors
+    let mut mutter_info = MUTTER_SCREENCAST_INFO.lock()
+        .map_err(|e| DBusError(format!("Failed to lock MUTTER_SCREENCAST_INFO: {}", e)))?;
+
     let connectors = super::mutter_capture::get_all_physical_connectors()
-        .map_err(|e| DBusError(format!("Failed to get connectors: {}", e)))?;
+        .map_err(|e| DBusError(e))?;
 
-    debug!("Found {} physical displays via Mutter DisplayConfig", connectors.len());
+    // Smart recreation: only recreate sessions when the set of connectors changes
+    let active_connectors: std::collections::HashSet<&str> = connectors.iter()
+        .filter(|c| !c.name.starts_with("Meta-"))
+        .map(|c| c.name.as_str())
+        .collect();
 
-    // Open PipeWire socket once for all displays
-    let pw_fd_raw = super::mutter_capture::open_pipewire_socket()
-        .map_err(|e| DBusError(format!("Failed to open PipeWire socket: {}", e)))?;
+    let need_recreate = match &*mutter_info {
+        None => true,
+        Some(info) => {
+            let session_connectors: std::collections::HashSet<&str> =
+                info.sessions.iter().map(|s| s.connector.as_str()).collect();
+            if session_connectors != active_connectors {
+                debug!("Mutter sessions stale: sessions={:?} but connectors={:?}, recreating",
+                    session_connectors, active_connectors);
+                true
+            } else {
+                false
+            }
+        }
+    };
 
-    // Convert std::os::unix::io::OwnedFd to dbus::arg::OwnedFd
-    use std::os::unix::io::IntoRawFd;
-    let pw_fd = unsafe { dbus::arg::OwnedFd::new(pw_fd_raw.into_raw_fd()) };
-
-    // Create RecordMonitor session for EACH display
-    let sessions = super::mutter_capture::create_sessions_for_all_displays()
-        .map_err(|e| DBusError(format!("Failed to create Mutter sessions: {}", e)))?;
-
-    if sessions.is_empty() {
-        return Err(Box::new(DBusError("No Mutter sessions created".into())));
+    if need_recreate {
+        if let Some(old_info) = mutter_info.take() {
+            for session in &old_info.sessions {
+                let _ = super::mutter_capture::stop_session(&session.session_path);
+            }
+            debug!("Mutter: closed {} stale sessions before recreation", old_info.sessions.len());
+        }
+        let (conn, sessions) = super::mutter_capture::create_all_sessions_on_shared_conn()
+            .map_err(|e| DBusError(e))?;
+        debug!("Mutter: created {} RecordMonitor sessions on shared D-Bus connection", sessions.len());
+        *mutter_info = Some(MutterScreenCastInfo { conn, sessions });
+    } else {
+        debug!("Mutter: reusing {} existing RecordMonitor sessions (stable node IDs)",
+            mutter_info.as_ref().unwrap().sessions.len());
     }
 
-    // Get D-Bus connection (reuse from first session)
-    let conn = Arc::new(dbus::blocking::SyncConnection::new_session()
-        .map_err(|e| DBusError(format!("D-Bus connection failed: {}", e)))?);
+    let info = mutter_info.as_ref().unwrap();
 
-    // Create PipeWireCapturable for each session
+    // Create PipeWireCapturable for each session — no portal fd, GStreamer connects directly
     let mut capturables = Vec::new();
-    for (i, session) in sessions.iter().enumerate() {
-        let connector_info = &connectors[i];
-
-        // Create stream info
-        let stream = PwStreamInfo {
-            path: session.node_id as u64,
-            source_type: 1, // MONITOR
-            position: (connector_info.x, connector_info.y),
-            size: (connector_info.width as usize, connector_info.height as usize),
-        };
-
-        let capturable = PipeWireCapturable::new(
-            conn.clone(),
-            pw_fd.clone(),
-            Arc::new(Mutex::new(None)),
-            &stream,
+    for session in &info.sessions {
+        let connector = connectors.iter().find(|c| c.name == session.connector);
+        let (x, y, w, h, scale, name, is_primary) = connector.map_or(
+            (0, 0, 1920, 1080, 1.0, session.connector.clone(), false),
+            |c| (c.x, c.y, c.width as usize, c.height as usize, c.scale, c.name.clone(), c.is_primary),
         );
 
+        let logical_w = if scale > 0.0 { (w as f64 / scale).round() as usize } else { w };
+        let logical_h = if scale > 0.0 { (h as f64 / scale).round() as usize } else { h };
+
+        let mut capturable = PipeWireCapturable::new_without_fd(
+            session.node_id as u64,
+            1, // MONITOR
+            (x, y),
+            (w, h),
+            (logical_w, logical_h),
+            name.clone(),
+        );
+        capturable.primary = is_primary;
         capturables.push(capturable);
-        debug!("Created capturer for {}: {}x{} at ({}, {})",
-            session.connector, connector_info.width, connector_info.height,
-            connector_info.x, connector_info.y);
+        debug!("Mutter capturable: {} node_id={} {}x{} (logical {}x{}, scale={}) at ({}, {}) primary={}",
+            name, session.node_id, w, h, logical_w, logical_h, scale, x, y, is_primary);
     }
 
-    tracing::info!("Mutter RecordMonitor: created {} capturers WITHOUT user dialog", capturables.len());
+    capturables.sort_by(|a, b| a.name.cmp(&b.name));
+
+    tracing::info!("Mutter RecordMonitor: {} capturables WITHOUT user dialog (sorted by name)", capturables.len());
+    for (i, c) in capturables.iter().enumerate() {
+        tracing::info!("  Display {}: {} at ({},{}) {}x{}", i, c.name, c.position.0, c.position.1, c.physical_size.0, c.physical_size.1);
+    }
     Ok(capturables)
+}
+
+/// Close Mutter RecordMonitor sessions (for display hotplug or cleanup).
+pub fn close_mutter_sessions() {
+    if let Ok(mut info) = MUTTER_SCREENCAST_INFO.lock() {
+        if let Some(mutter_info) = info.take() {
+            for session in &mutter_info.sessions {
+                let _ = super::mutter_capture::stop_session(&session.session_path);
+            }
+            debug!("Mutter: closed all RecordMonitor sessions");
+        }
+    }
 }
 
 // If `is_server_running()` is true, then `screencast_portal::start` is called.
@@ -1063,7 +1148,7 @@ pub(crate) fn is_server_running() -> bool {
         return v == 1;
     }
 
-    let app_name = config::APP_NAME_SYS.read().unwrap().clone().to_lowercase();
+    let app_name = config::APP_NAME.read().unwrap().clone().to_lowercase();
     let output = match Command::new(CMD_SH.as_str())
         .arg("-c")
         .arg(&format!("ps aux | grep {}", app_name))
@@ -1149,8 +1234,26 @@ pub fn fill_displays(
     let rdp_info = match rdp_connection.as_mut() {
         Some(res) => res,
         None => {
-            // Unreachable
-            bail!("RDP session info is None when filling display positions.");
+            // RecordMonitor path: positions are already set from Mutter DisplayConfig,
+            // no portal streams to fill. Respect the actual primary flag from Mutter.
+            debug!("fill_displays: no RDP session (RecordMonitor path), positions already set");
+            let mut has_primary = false;
+            for d in shared_displays.iter() {
+                if let crate::Display::WAYLAND(d) = d {
+                    if d.0.primary {
+                        has_primary = true;
+                        break;
+                    }
+                }
+            }
+            if !has_primary {
+                shared_displays.iter_mut().next().map(|d| {
+                    if let crate::Display::WAYLAND(d) = d {
+                        d.0.primary = true;
+                    }
+                });
+            }
+            return Ok(());
         }
     };
 
@@ -1476,14 +1579,15 @@ fn fill_multi_matched_positions_cursor(
                 mouse_move_to_(&mouse_move_to, get_cursor_pos, 300, 300);
 
                 let mut rec = PipeWireRecorder::new(PipeWireCapturable {
-                    dbus_conn: conn.clone(),
-                    fd: fd.clone(),
+                    dbus_conn: Some(conn.clone()),
+                    fd: Some(fd.clone()),
                     path: pw_stream_with_cursor.path,
                     source_type: pw_stream_with_cursor.source_type,
                     primary: false,
                     position: pw_stream_with_cursor.position,
                     logical_size: pw_stream_with_cursor.size,
                     physical_size: (0, 0),
+                    name: String::new(),
                 })?;
                 // Take first frame and copy owned buffer to avoid borrow across second capture
                 let (is_bgr, w, first_buf): (bool, usize, Vec<u8>) =

@@ -1007,7 +1007,7 @@ pub fn get_app_name() -> String {
 
 #[inline]
 pub fn get_app_name_sys() -> String {
-    hbb_common::config::APP_NAME_SYS.read().unwrap().clone()
+    hbb_common::config::APP_NAME.read().unwrap().clone()
 }
 
 #[inline]

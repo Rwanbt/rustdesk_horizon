@@ -199,32 +199,8 @@ pub(super) async fn check_init() -> ResultType<()> {
                 let mut all = Display::all()?;
                 log::info!("wayland::check_init() Display::all() retourné {} displays (from portal)", all.len());
 
-                // Discover active Mutter RecordVirtual virtual displays (only if EVDI is NOT used,
-                // since EVDI creates real DRM devices that Mutter detects as connectors).
-                if !is_x11() && !crate::virtual_display_manager::linux_evdi::is_supported() {
-                    let vds = crate::virtual_display_manager::linux_wayland::get_active_virtual_displays();
-                    if !vds.is_empty() {
-                        let nodes: Vec<(u32, usize, usize)> = vds
-                            .iter()
-                            .map(|vd| (vd.node_id, vd.width as usize, vd.height as usize))
-                            .collect();
-                        match Display::from_virtual_nodes(&nodes) {
-                            Ok(vd_displays) => {
-                                log::info!(
-                                    "wayland::check_init() adding {} Mutter virtual displays",
-                                    vd_displays.len()
-                                );
-                                all.extend(vd_displays);
-                            }
-                            Err(e) => {
-                                log::warn!(
-                                    "wayland::check_init() failed to create virtual display capturers: {}",
-                                    e
-                                );
-                            }
-                        }
-                    }
-                }
+                // Mutter RecordVirtual virtual displays are not used when EVDI is active
+                // (EVDI creates real DRM connectors that Mutter detects automatically).
 
                 // Log each display for debugging
                 for (i, display) in all.iter().enumerate() {
@@ -396,9 +372,8 @@ pub fn clear() {
     }
     write_lock.clear();
 
-    // Close Mutter RecordMonitor sessions so they get recreated on next init
-    // (needed when display configuration changes, e.g. EVDI virtual display added/removed)
-    scrap::wayland::pipewire::close_mutter_sessions();
+    // Do not close Mutter RecordMonitor sessions here — clear() is called on
+    // every display switch and destroying sessions causes PipeWire node ID recycling.
 
     // Reset PipeWire initialization flag to allow recreation on next init
     *PIPEWIRE_INITIALIZED.write().unwrap() = false;
