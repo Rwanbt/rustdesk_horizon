@@ -61,6 +61,7 @@ class _GestureHelpState extends State<GestureHelp> {
   late int _selectedIndex;
   late bool _touchMode;
   final VirtualMouseMode _virtualMouseMode;
+  bool _showAllGestures = false;
 
   _GestureHelpState(bool touchMode, VirtualMouseMode virtualMouseMode)
       : _virtualMouseMode = virtualMouseMode {
@@ -106,12 +107,52 @@ class _GestureHelpState extends State<GestureHelp> {
     );
   }
 
+  Widget _buildCursorCheckbox({required String key, required String label}) {
+    return Transform.translate(
+      offset: const Offset(-10.0, 0.0),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Checkbox(
+            value: bind.mainGetLocalOption(key: key) == 'Y',
+            onChanged: (value) async {
+              if (value == null) return;
+              await bind.mainSetLocalOption(
+                key: key,
+                value: value ? 'Y' : '',
+              );
+              setState(() {});
+            },
+          ),
+          Flexible(
+            child: InkWell(
+              onTap: () async {
+                final current = bind.mainGetLocalOption(key: key) == 'Y';
+                await bind.mainSetLocalOption(
+                  key: key,
+                  value: !current ? 'Y' : '',
+                );
+                setState(() {});
+              },
+              child: Text(translate(label),
+                  overflow: TextOverflow.ellipsis, maxLines: 1),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   List<Widget> _buildGestureCards(double width) {
-    final inputs = _touchMode
+    final defaultInputs = _touchMode
         ? GestureMapModel.displayedTouchInputs
         : GestureMapModel.displayedMouseInputs;
 
-    return inputs.map((input) {
+    final inputs = _showAllGestures
+        ? GestureInput.values
+        : defaultInputs;
+
+    final cards = inputs.map((input) {
       final action = GestureMapModel.getAction(_touchMode, input);
       final isConfigurable =
           GestureMapModel.configurableInputs.contains(input);
@@ -133,6 +174,19 @@ class _GestureHelpState extends State<GestureHelp> {
             : null,
       );
     }).toList();
+
+    // Add +/- toggle card
+    cards.add(GestureInfo(
+      width: width,
+      icon: _showAllGestures ? Icons.remove_circle_outline : Icons.add_circle_outline,
+      fromText: '',
+      toText: _showAllGestures
+          ? translate('Show less')
+          : translate('Show more'),
+      onTap: () => setState(() => _showAllGestures = !_showAllGestures),
+    ));
+
+    return cards;
   }
 
   @override
@@ -196,14 +250,18 @@ class _GestureHelpState extends State<GestureHelp> {
                                 setState(() {});
                               },
                             ),
-                            InkWell(
-                              onTap: () async {
-                                await _virtualMouseMode.toggleVirtualMouse();
-                                _exitRelativeMouseModeIf(
-                                    !_virtualMouseMode.showVirtualMouse);
-                                setState(() {});
-                              },
-                              child: Text(translate('Show virtual mouse')),
+                            Flexible(
+                              child: InkWell(
+                                onTap: () async {
+                                  await _virtualMouseMode.toggleVirtualMouse();
+                                  _exitRelativeMouseModeIf(
+                                      !_virtualMouseMode.showVirtualMouse);
+                                  setState(() {});
+                                },
+                                child: Text(translate('Show virtual mouse'),
+                                    overflow: TextOverflow.ellipsis,
+                                    maxLines: 1),
+                              ),
                             ),
                           ],
                         ),
@@ -278,17 +336,21 @@ class _GestureHelpState extends State<GestureHelp> {
                                       setState(() {});
                                     },
                                   ),
-                                  InkWell(
-                                    onTap: () async {
-                                      await _virtualMouseMode
-                                          .toggleVirtualJoystick();
-                                      _exitRelativeMouseModeIf(
-                                          !_virtualMouseMode
-                                              .showVirtualJoystick);
-                                      setState(() {});
-                                    },
-                                    child: Text(
-                                        translate("Show virtual joystick")),
+                                  Flexible(
+                                    child: InkWell(
+                                      onTap: () async {
+                                        await _virtualMouseMode
+                                            .toggleVirtualJoystick();
+                                        _exitRelativeMouseModeIf(
+                                            !_virtualMouseMode
+                                                .showVirtualJoystick);
+                                        setState(() {});
+                                      },
+                                      child: Text(
+                                          translate("Show virtual joystick"),
+                                          overflow: TextOverflow.ellipsis,
+                                          maxLines: 1),
+                                    ),
                                   ),
                                 ],
                               )),
@@ -314,50 +376,41 @@ class _GestureHelpState extends State<GestureHelp> {
                                               .setRelativeMouseMode(value);
                                         },
                                       ),
-                                      InkWell(
-                                        onTap: () {
-                                          widget.inputModel!
-                                              .toggleRelativeMouseMode();
-                                        },
-                                        child: Text(
-                                            translate('Relative mouse mode')),
+                                      Flexible(
+                                        child: InkWell(
+                                          onTap: () {
+                                            widget.inputModel!
+                                                .toggleRelativeMouseMode();
+                                          },
+                                          child: Text(
+                                              translate('Relative mouse mode'),
+                                              overflow: TextOverflow.ellipsis,
+                                              maxLines: 1),
+                                        ),
                                       ),
                                     ],
                                   )),
                             )),
-                      Transform.translate(
-                        offset: const Offset(-10.0, 0.0),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Checkbox(
-                              value: bind.mainGetLocalOption(
-                                      key: kOptionHideLocalCursor) ==
-                                  'Y',
-                              onChanged: (value) async {
-                                if (value == null) return;
-                                await bind.mainSetLocalOption(
-                                  key: kOptionHideLocalCursor,
-                                  value: value ? 'Y' : '',
-                                );
-                                setState(() {});
-                              },
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Flexible(
+                            child: _buildCursorCheckbox(
+                              key: _touchMode
+                                  ? kOptionHideLocalCursorTouch
+                                  : kOptionHideLocalCursorMouse,
+                              label: 'Hide local cursor',
                             ),
-                            InkWell(
-                              onTap: () async {
-                                final current = bind.mainGetLocalOption(
-                                        key: kOptionHideLocalCursor) ==
-                                    'Y';
-                                await bind.mainSetLocalOption(
-                                  key: kOptionHideLocalCursor,
-                                  value: !current ? 'Y' : '',
-                                );
-                                setState(() {});
-                              },
-                              child: Text(translate('Hide local cursor')),
+                          ),
+                          Flexible(
+                            child: _buildCursorCheckbox(
+                              key: _touchMode
+                                  ? kOptionHideRemoteCursorTouch
+                                  : kOptionHideRemoteCursorMouse,
+                              label: 'Hide distant cursor',
                             ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -424,11 +477,15 @@ class GestureInfo extends StatelessWidget {
             SizedBox(height: 6),
             Text(fromText,
                 textAlign: TextAlign.center,
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
                 style: TextStyle(
                     fontSize: 9, color: Theme.of(context).hintColor)),
             SizedBox(height: 3),
             Text(toText,
                 textAlign: TextAlign.center,
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: isCustom ? FontWeight.bold : FontWeight.normal,

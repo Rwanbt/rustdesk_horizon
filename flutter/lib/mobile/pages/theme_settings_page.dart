@@ -22,18 +22,18 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
   };
 
   String _currentHex = '';
-  bool _soberTheme = false;
+  bool _soberTheme = true;
 
   @override
   void initState() {
     super.initState();
     _currentHex = bind.mainGetLocalOption(key: kOptionAccentColor);
-    _soberTheme = bind.mainGetLocalOption(key: kOptionSoberTheme) == 'Y';
+    _soberTheme = bind.mainGetLocalOption(key: kOptionSoberTheme) != 'N';
   }
 
   int get _currentColor {
-    if (_currentHex.isEmpty) return 0x0071FF;
-    return int.tryParse(_currentHex, radix: 16) ?? 0x0071FF;
+    if (_currentHex.isEmpty) return 0x616161;
+    return int.tryParse(_currentHex, radix: 16) ?? 0x616161;
   }
 
   Future<void> _selectColor(int colorValue) async {
@@ -49,7 +49,7 @@ class _ThemeSettingsPageState extends State<ThemeSettingsPage> {
 
   Future<void> _toggleSoberTheme(bool value) async {
     await bind.mainSetLocalOption(
-        key: kOptionSoberTheme, value: value ? 'Y' : '');
+        key: kOptionSoberTheme, value: value ? '' : 'N');
     setState(() => _soberTheme = value);
   }
 

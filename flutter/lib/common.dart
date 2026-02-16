@@ -264,14 +264,14 @@ class MyTheme {
 
   static Color get dynamicAccent {
     final stored = bind.mainGetLocalOption(key: kOptionAccentColor);
-    if (stored.isEmpty) return accent;
+    if (stored.isEmpty) return const Color(0xFF616161);
     final parsed = int.tryParse(stored, radix: 16);
-    if (parsed == null) return accent;
+    if (parsed == null) return const Color(0xFF616161);
     return Color(parsed | 0xFF000000);
   }
 
   static bool get isSoberTheme =>
-      bind.mainGetLocalOption(key: kOptionSoberTheme) == 'Y';
+      bind.mainGetLocalOption(key: kOptionSoberTheme) != 'N';
 
   // ListTile
   static const ListTileThemeData listTileTheme = ListTileThemeData(

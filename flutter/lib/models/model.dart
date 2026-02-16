@@ -2434,6 +2434,9 @@ class CanvasModel with ChangeNotifier {
 
     _x += dxOffset;
     _y += dyOffset;
+    if (isMobile) {
+      _clampCanvasPosition();
+    }
     if (dxOffset != 0 || dyOffset != 0) {
       notifyListeners();
     }
@@ -2562,9 +2565,35 @@ class CanvasModel with ChangeNotifier {
     notifyListeners();
   }
 
+  // mobile only — clamp canvas so content edges never go past viewport edges
+  void _clampCanvasPosition() {
+    if (_size == Size.zero) return;
+    final scaledW = getDisplayWidth() * _scale;
+    final scaledH = getDisplayHeight() * _scale;
+
+    // Horizontal axis
+    if (scaledW <= _size.width) {
+      // Content fits: center it
+      _x = (_size.width - scaledW) / 2;
+    } else {
+      // Content overflows: clamp so no empty space on either side
+      // _x <= 0  (left edge of content at or past left edge of viewport)
+      // _x >= _size.width - scaledW  (right edge of content at or past right edge)
+      _x = _x.clamp(_size.width - scaledW, 0.0);
+    }
+
+    // Vertical axis
+    if (scaledH <= _size.height) {
+      _y = (_size.height - scaledH) / 2;
+    } else {
+      _y = _y.clamp(_size.height - scaledH, 0.0);
+    }
+  }
+
   panX(double dx) {
     _x += dx;
     if (isMobile) {
+      _clampCanvasPosition();
       isMobileCanvasChanged = true;
     }
     notifyListeners();
@@ -2582,6 +2611,7 @@ class CanvasModel with ChangeNotifier {
   panY(double dy) {
     _y += dy;
     if (isMobile) {
+      _clampCanvasPosition();
       isMobileCanvasChanged = true;
     }
     notifyListeners();
@@ -2604,6 +2634,7 @@ class CanvasModel with ChangeNotifier {
     // _y_2 = focalPoint.dy - adjust - (focalPoint.dy - _y_1 - adjust) / s1 * s2
     _y = focalPoint.dy - adjust - (focalPoint.dy - _y - adjust) / s * _scale;
     if (isMobile) {
+      _clampCanvasPosition();
       isMobileCanvasChanged = true;
     }
     notifyListeners();
