@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common.dart';
+import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/input_model.dart';
 import 'package:flutter_hbb/models/model.dart';
+import 'package:flutter_hbb/models/platform_model.dart';
+import 'package:flutter_hbb/mobile/pages/gesture_settings_page.dart';
 import 'package:get/get.dart';
 import 'package:toggle_switch/toggle_switch.dart';
 
@@ -120,6 +123,18 @@ class _GestureHelpState extends State<GestureHelp> {
                             }
                           });
                         },
+                      ),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton.icon(
+                          icon: const Icon(Icons.settings, size: 18),
+                          label: Text(translate('Gesture Settings')),
+                          onPressed: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (_) =>
+                                      const GestureSettingsPage())),
+                        ),
                       ),
                       Transform.translate(
                         offset: const Offset(-10.0, 0.0),
@@ -272,6 +287,40 @@ class _GestureHelpState extends State<GestureHelp> {
                                     ],
                                   )),
                             )),
+                      Transform.translate(
+                        offset: const Offset(-10.0, 0.0),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Checkbox(
+                              value: bind.mainGetLocalOption(
+                                      key: kOptionHideLocalCursor) ==
+                                  'Y',
+                              onChanged: (value) async {
+                                if (value == null) return;
+                                await bind.mainSetLocalOption(
+                                  key: kOptionHideLocalCursor,
+                                  value: value ? 'Y' : '',
+                                );
+                                setState(() {});
+                              },
+                            ),
+                            InkWell(
+                              onTap: () async {
+                                final current = bind.mainGetLocalOption(
+                                        key: kOptionHideLocalCursor) ==
+                                    'Y';
+                                await bind.mainSetLocalOption(
+                                  key: kOptionHideLocalCursor,
+                                  value: !current ? 'Y' : '',
+                                );
+                                setState(() {});
+                              },
+                              child: Text(translate('Hide local cursor')),
+                            ),
+                          ],
+                        ),
+                      ),
                     ],
                   ),
                 ),

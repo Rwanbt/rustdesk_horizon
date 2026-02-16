@@ -262,6 +262,17 @@ class MyTheme {
   static const Color button = Color(0xFF2C8CFF);
   static const Color hoverBorder = Color(0xFF999999);
 
+  static Color get dynamicAccent {
+    final stored = bind.mainGetLocalOption(key: kOptionAccentColor);
+    if (stored.isEmpty) return accent;
+    final parsed = int.tryParse(stored, radix: 16);
+    if (parsed == null) return accent;
+    return Color(parsed | 0xFF000000);
+  }
+
+  static bool get isSoberTheme =>
+      bind.mainGetLocalOption(key: kOptionSoberTheme) == 'Y';
+
   // ListTile
   static const ListTileThemeData listTileTheme = ListTileThemeData(
     shape: RoundedRectangleBorder(

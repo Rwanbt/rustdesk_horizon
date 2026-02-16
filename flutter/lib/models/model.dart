@@ -476,6 +476,11 @@ class FfiModel with ChangeNotifier {
       } else if (name == 'exit_relative_mouse_mode') {
         // Handle exit shortcut from rdev grab loop (Ctrl+Alt on Win/Linux, Cmd+G on macOS)
         parent.target?.inputModel.exitRelativeMouseModeWithKeyRelease();
+      } else if (name == 'open_keyboard') {
+        if (isMobile &&
+            bind.mainGetLocalOption(key: kOptionAutoOpenKeyboard) == 'Y') {
+          parent.target?.openKeyboardCallback?.call();
+        }
       } else {
         debugPrint('Event is not handled in the fixed branch: $name');
       }
@@ -1922,7 +1927,7 @@ class ImageModel with ChangeNotifier {
     final size = parent.target!.canvasModel.getSize();
     final xscale = size.width / _image!.width;
     final yscale = size.height / _image!.height;
-    return min(xscale, yscale) / 1.5;
+    return min(xscale, yscale);
   }
 
   updateUserTextureRender() {
@@ -3536,6 +3541,9 @@ class FFI {
   var version = '';
   var connType = ConnType.defaultConn;
   var closed = false;
+
+  /// Callback for server-triggered keyboard open (auto-keyboard feature).
+  VoidCallback? openKeyboardCallback;
 
   /// dialogManager use late to ensure init after main page binding [globalKey]
   late final dialogManager = OverlayDialogManager();
