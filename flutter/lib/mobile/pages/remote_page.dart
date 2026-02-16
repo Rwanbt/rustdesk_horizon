@@ -651,14 +651,26 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     );
   }
 
-  bool get _hideLocalCursor =>
-      bind.mainGetLocalOption(key: kOptionHideLocalCursor) == 'Y';
+  bool get _hideLocalCursor {
+    final key = gFFI.ffiModel.touchMode
+        ? kOptionHideLocalCursorTouch
+        : kOptionHideLocalCursorMouse;
+    return bind.mainGetLocalOption(key: key) == 'Y';
+  }
+
+  bool get _hideRemoteCursor {
+    final key = gFFI.ffiModel.touchMode
+        ? kOptionHideRemoteCursorTouch
+        : kOptionHideRemoteCursorMouse;
+    return bind.mainGetLocalOption(key: key) == 'Y';
+  }
 
   bool get showCursorPaint =>
       !gFFI.ffiModel.isPeerAndroid &&
       !gFFI.canvasModel.cursorEmbedded &&
       !gFFI.inputModel.relativeMouseMode.value &&
-      !_hideLocalCursor;
+      !_hideLocalCursor &&
+      !_hideRemoteCursor;
 
   void _sendOrientationResolution(Orientation orientation) {
     final pi = gFFI.ffiModel.pi;
@@ -699,7 +711,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
             ),
             KeyHelpTools(
                 keyboardIsVisible: keyboardIsVisible,
-                showGestureHelp: _showGestureHelp),
+                showGestureHelp: _showGestureHelp,
+                showBar: _showBar),
             SizedBox(
               width: 0,
               height: 0,
@@ -962,12 +975,15 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 class KeyHelpTools extends StatefulWidget {
   final bool keyboardIsVisible;
   final bool showGestureHelp;
+  final bool showBar;
 
   /// need to show by external request, etc [keyboardIsVisible] or [changeTouchMode]
   bool get requestShow => keyboardIsVisible || showGestureHelp;
 
   KeyHelpTools(
-      {required this.keyboardIsVisible, required this.showGestureHelp});
+      {required this.keyboardIsVisible,
+      required this.showGestureHelp,
+      this.showBar = true});
 
   @override
   State<KeyHelpTools> createState() => _KeyHelpToolsState();
@@ -977,10 +993,42 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
   var _more = true;
   var _fn = false;
   var _pin = false;
+  bool _showHandle = true;
+  Timer? _handleHideTimer;
   final _keyboardVisibilityController = KeyboardVisibilityController();
   final _key = GlobalKey();
 
   InputModel get inputModel => gFFI.inputModel;
+
+  @override
+  void dispose() {
+    _handleHideTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant KeyHelpTools oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // When bottom bar hides, show handle briefly then start auto-hide timer
+    if (!widget.showBar && oldWidget.showBar) {
+      _showHandle = true;
+      _startHandleHideTimer();
+    }
+    // When bottom bar shows, cancel timer and reset
+    if (widget.showBar && !oldWidget.showBar) {
+      _handleHideTimer?.cancel();
+      _showHandle = true;
+    }
+  }
+
+  void _startHandleHideTimer() {
+    _handleHideTimer?.cancel();
+    _handleHideTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted && !_pin) {
+        setState(() => _showHandle = false);
+      }
+    });
+  }
 
   Widget wrap(String text, void Function() onPressed,
       {bool? active, IconData? icon}) {
@@ -1027,6 +1075,32 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
     if (!_pin && !hasModifierOn && !widget.requestShow) {
       gFFI.cursorModel
           .keyHelpToolsVisibilityChanged(null, widget.keyboardIsVisible);
+      // When bottom bar is hidden, show a small edge handle briefly
+      if (!widget.showBar && _showHandle) {
+        return Positioned(
+          right: 0,
+          top: MediaQuery.of(context).size.height * 0.3,
+          child: GestureDetector(
+            onTap: () {
+              _handleHideTimer?.cancel();
+              setState(() => _pin = true);
+            },
+            child: Container(
+              width: 18,
+              height: 40,
+              decoration: BoxDecoration(
+                color: MyTheme.dynamicAccent.withOpacity(0.6),
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(20),
+                  bottomLeft: Radius.circular(20),
+                ),
+              ),
+              child: const Icon(Icons.chevron_left,
+                  color: Colors.white70, size: 14),
+            ),
+          ),
+        );
+      }
       return Offstage();
     }
     final size = MediaQuery.of(context).size;

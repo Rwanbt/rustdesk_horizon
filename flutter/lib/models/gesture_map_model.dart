@@ -24,6 +24,12 @@ enum GestureAction {
   panCanvas,
   zoomCanvas,
   nothing,
+  copy,
+  paste,
+  selectAll,
+  undo,
+  redo,
+  middleClick,
 }
 
 const Map<GestureInput, String> gestureInputLabels = {
@@ -48,6 +54,12 @@ const Map<GestureAction, String> gestureActionLabels = {
   GestureAction.panCanvas: 'Pan Canvas',
   GestureAction.zoomCanvas: 'Zoom',
   GestureAction.nothing: 'Nothing',
+  GestureAction.copy: 'Copy',
+  GestureAction.paste: 'Paste',
+  GestureAction.selectAll: 'Select All',
+  GestureAction.undo: 'Undo',
+  GestureAction.redo: 'Redo',
+  GestureAction.middleClick: 'Middle Click',
 };
 
 class GestureMapModel {
@@ -59,8 +71,8 @@ class GestureMapModel {
     GestureInput.doubleTap: GestureAction.doubleClick,
     GestureInput.longPress: GestureAction.rightClick,
     GestureInput.pan1: GestureAction.moveCursor,
-    GestureInput.pan2: GestureAction.panCanvas,
-    GestureInput.pan3: GestureAction.scroll,
+    GestureInput.pan2: GestureAction.scroll,
+    GestureInput.pan3: GestureAction.panCanvas,
     GestureInput.pinch: GestureAction.zoomCanvas,
     GestureInput.holdDrag: GestureAction.drag,
   };
@@ -70,7 +82,7 @@ class GestureMapModel {
     GestureInput.tap2: GestureAction.nothing,
     GestureInput.doubleTap: GestureAction.doubleClick,
     GestureInput.longPress: GestureAction.rightClick,
-    GestureInput.pan1: GestureAction.drag,
+    GestureInput.pan1: GestureAction.scroll,
     GestureInput.pan2: GestureAction.panCanvas,
     GestureInput.pan3: GestureAction.scroll,
     GestureInput.pinch: GestureAction.zoomCanvas,
@@ -172,6 +184,8 @@ class GestureMapModel {
 
   static const Set<GestureInput> configurableInputs = {
     GestureInput.tap1,
+    GestureInput.tap2,
+    GestureInput.doubleTap,
     GestureInput.longPress,
     GestureInput.pan1,
     GestureInput.holdDrag,

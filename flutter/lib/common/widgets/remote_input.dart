@@ -96,6 +96,8 @@ class _RawTouchGestureDetectorRegionState
   int _cacheLongPressPositionTs = 0;
   double _mouseScrollIntegral = 0; // mouse scroll speed controller
   double _scale = 1;
+  GestureAction? _activeOneFingerPanAction;
+  double _oneFingerScrollIntegral = 0;
 
   // Workaround tap down event when two fingers are used to scale(mobile)
   TapDownDetails? _lastTapDownDetails;
@@ -132,6 +134,34 @@ class _RawTouchGestureDetectorRegionState
       case GestureAction.doubleClick:
         await inputModel.tap(MouseButtons.left);
         await inputModel.tap(MouseButtons.left);
+        break;
+      case GestureAction.middleClick:
+        await inputModel.tap(MouseButtons.wheel);
+        break;
+      case GestureAction.copy:
+        inputModel.ctrl = true;
+        inputModel.inputKey('VK_C');
+        inputModel.ctrl = false;
+        break;
+      case GestureAction.paste:
+        inputModel.ctrl = true;
+        inputModel.inputKey('VK_V');
+        inputModel.ctrl = false;
+        break;
+      case GestureAction.selectAll:
+        inputModel.ctrl = true;
+        inputModel.inputKey('VK_A');
+        inputModel.ctrl = false;
+        break;
+      case GestureAction.undo:
+        inputModel.ctrl = true;
+        inputModel.inputKey('VK_Z');
+        inputModel.ctrl = false;
+        break;
+      case GestureAction.redo:
+        inputModel.ctrl = true;
+        inputModel.inputKey('VK_Y');
+        inputModel.ctrl = false;
         break;
       default:
         break;
@@ -412,6 +442,9 @@ class _RawTouchGestureDetectorRegionState
       }
 
       _touchModePanStarted = true;
+      _activeOneFingerPanAction =
+          GestureMapModel.getAction(true, GestureInput.pan1);
+      _oneFingerScrollIntegral = 0;
       if (isDesktop || isWebDesktop) {
         ffi.cursorModel.trySetRemoteWindowCoords();
       }
@@ -426,11 +459,16 @@ class _RawTouchGestureDetectorRegionState
         await ffi.cursorModel
             .move(_cacheLongPressPosition.dx, _cacheLongPressPosition.dy);
       }
-      // In relative mouse mode, skip mouse down - only send movement via sendMobileRelativeMouseMove
-      if (!inputModel.relativeMouseMode.value) {
-        await inputModel.sendMouse('down', MouseButtons.left);
+      // Only send mouse down for drag action
+      if (_activeOneFingerPanAction == GestureAction.drag) {
+        if (!inputModel.relativeMouseMode.value) {
+          await inputModel.sendMouse('down', MouseButtons.left);
+        }
       }
-      await ffi.cursorModel.move(d.localPosition.dx, d.localPosition.dy);
+      if (_activeOneFingerPanAction == GestureAction.drag ||
+          _activeOneFingerPanAction == GestureAction.moveCursor) {
+        await ffi.cursorModel.move(d.localPosition.dx, d.localPosition.dy);
+      }
     } else {
       final offset = ffi.cursorModel.offset;
       final cursorX = offset.dx;
@@ -454,6 +492,28 @@ class _RawTouchGestureDetectorRegionState
     if (handleTouch && !_touchModePanStarted) {
       return;
     }
+    if (handleTouch) {
+      // Dispatch based on configured one-finger pan action
+      switch (_activeOneFingerPanAction) {
+        case GestureAction.scroll:
+          _oneFingerScrollIntegral += d.delta.dy / 4;
+          if (_oneFingerScrollIntegral > 1) {
+            inputModel.scroll(1);
+            _oneFingerScrollIntegral = 0;
+          } else if (_oneFingerScrollIntegral < -1) {
+            inputModel.scroll(-1);
+            _oneFingerScrollIntegral = 0;
+          }
+          return;
+        case GestureAction.panCanvas:
+          ffi.canvasModel.panX(d.delta.dx);
+          ffi.canvasModel.panY(d.delta.dy);
+          return;
+        default:
+          // drag / moveCursor — original behavior
+          break;
+      }
+    }
     // In relative mouse mode, send delta directly without position tracking.
     if (inputModel.relativeMouseMode.value) {
       await inputModel.sendMobileRelativeMouseMove(d.delta.dx, d.delta.dy);
@@ -463,7 +523,9 @@ class _RawTouchGestureDetectorRegionState
   }
 
   onOneFingerPanEnd(DragEndDetails d) async {
+    final panAction = _activeOneFingerPanAction;
     _touchModePanStarted = false;
+    _activeOneFingerPanAction = null;
     if (isNotTouchBasedDevice()) {
       return;
     }
@@ -471,9 +533,11 @@ class _RawTouchGestureDetectorRegionState
       ffi.cursorModel.clearRemoteWindowCoords();
     }
     if (handleTouch) {
-      // In relative mouse mode, skip mouse up - matches the skipped mouse down in onOneFingerPanStart
-      if (!inputModel.relativeMouseMode.value) {
-        await inputModel.sendMouse('up', MouseButtons.left);
+      // Only send mouse up for drag action (matches mouse down in onOneFingerPanStart)
+      if (panAction == GestureAction.drag) {
+        if (!inputModel.relativeMouseMode.value) {
+          await inputModel.sendMouse('up', MouseButtons.left);
+        }
       }
     }
   }
@@ -526,23 +590,32 @@ class _RawTouchGestureDetectorRegionState
                     .toJson()));
       }
     } else {
-      // mobile — check pan2 mapping for two-finger move behavior
+      // mobile — threshold-based intent detection for pinch vs pan2
       final pan2Action = GestureMapModel.getAction(
           ffiModel.touchMode, GestureInput.pan2);
+      final scaleChange = (d.scale - 1.0).abs();
+      const kPinchThreshold = 0.02;
+
+      // Pinch-to-zoom always active regardless of pan2 config
+      if (scaleChange > kPinchThreshold) {
+        ffi.canvasModel.updateScale(d.scale / _scale, d.focalPoint);
+      }
+      _scale = d.scale; // Always track to avoid jumps
+
+      // Pan2 behavior (only when not actively pinching)
       if (pan2Action == GestureAction.scroll) {
-        // Two-finger scroll (like a trackpad)
-        _mouseScrollIntegral += d.focalPointDelta.dy / 4;
-        if (_mouseScrollIntegral > 1) {
-          inputModel.scroll(1);
-          _mouseScrollIntegral = 0;
-        } else if (_mouseScrollIntegral < -1) {
-          inputModel.scroll(-1);
-          _mouseScrollIntegral = 0;
+        if (scaleChange <= kPinchThreshold) {
+          _mouseScrollIntegral += d.focalPointDelta.dy / 4;
+          if (_mouseScrollIntegral > 1) {
+            inputModel.scroll(1);
+            _mouseScrollIntegral = 0;
+          } else if (_mouseScrollIntegral < -1) {
+            inputModel.scroll(-1);
+            _mouseScrollIntegral = 0;
+          }
         }
       } else {
-        // Default: canvas pan + pinch zoom
-        ffi.canvasModel.updateScale(d.scale / _scale, d.focalPoint);
-        _scale = d.scale;
+        // Default: canvas pan
         ffi.canvasModel.panX(d.focalPointDelta.dx);
         ffi.canvasModel.panY(d.focalPointDelta.dy);
       }
