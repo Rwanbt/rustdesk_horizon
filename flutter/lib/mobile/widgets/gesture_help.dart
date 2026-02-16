@@ -95,7 +95,6 @@ class _GestureHelpState extends State<GestureHelp> {
               children: <Widget>[
                 Center(
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       ToggleSwitch(
                         initialLabelIndex: _selectedIndex,
@@ -124,17 +123,15 @@ class _GestureHelpState extends State<GestureHelp> {
                           });
                         },
                       ),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: TextButton.icon(
-                          icon: const Icon(Icons.settings, size: 18),
-                          label: Text(translate('Gesture Settings')),
-                          onPressed: () => Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                  builder: (_) =>
-                                      const GestureSettingsPage())),
-                        ),
+                      const SizedBox(height: 4),
+                      TextButton.icon(
+                        icon: const Icon(Icons.settings, size: 18),
+                        label: Text(translate('Gesture Settings')),
+                        onPressed: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) =>
+                                    const GestureSettingsPage())),
                       ),
                       Transform.translate(
                         offset: const Offset(-10.0, 0.0),
