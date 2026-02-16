@@ -4,7 +4,7 @@ use super::filetype::FileDescription;
 use crate::{ClipboardFile, CliprdrError};
 use cs::FuseServer;
 use fuser::MountOption;
-use hbb_common::{config::{APP_NAME_SYS}, log};
+use hbb_common::{config::{APP_NAME}, log};
 use parking_lot::Mutex;
 use std::{
     path::PathBuf,
@@ -14,13 +14,13 @@ use std::{
 
 lazy_static::lazy_static! {
     static ref FUSE_MOUNT_POINT_CLIENT: Arc<String> = {
-        let mnt_path = format!("/tmp/{}/{}", APP_NAME_SYS.read().unwrap(), "cliprdr-client");
+        let mnt_path = format!("/tmp/{}/{}", APP_NAME.read().unwrap(), "cliprdr-client");
         // No need to run `canonicalize()` here.
         Arc::new(mnt_path)
     };
 
     static ref FUSE_MOUNT_POINT_SERVER: Arc<String> = {
-        let mnt_path = format!("/tmp/{}/{}", APP_NAME_SYS.read().unwrap(), "cliprdr-server");
+        let mnt_path = format!("/tmp/{}/{}", APP_NAME.read().unwrap(), "cliprdr-server");
         // No need to run `canonicalize()` here.
         Arc::new(mnt_path)
     };
