@@ -58,3 +58,5 @@ flutter/web/
 # Claude Code local settings
 .claude/
 nul
+# Build artifacts
+*.apk
