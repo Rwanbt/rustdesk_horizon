@@ -26,6 +26,7 @@ import '../../models/platform_model.dart';
 import '../../utils/image.dart';
 import '../widgets/dialog.dart';
 import '../widgets/custom_scale_widget.dart';
+import '../pages/theme_settings_page.dart';
 
 final initText = '1' * 1024;
 
@@ -801,6 +802,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     final y = size.height;
     final mobileActionMenus = _getMobileActionMenus();
     final menus = toolbarControls(context, id, gFFI);
+    final themeIndex = mobileActionMenus.length + menus.length;
 
     final List<PopupMenuEntry<int>> more = [
       ...mobileActionMenus
@@ -817,6 +819,15 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               child: e.value.getChild(),
               value: e.key + mobileActionMenus.length))
           .toList(),
+      PopupMenuDivider(),
+      PopupMenuItem<int>(
+        value: themeIndex,
+        child: Row(children: [
+          const Icon(Icons.palette, size: 18),
+          const SizedBox(width: 8),
+          Text(translate('Theme Customization')),
+        ]),
+      ),
     ];
     () async {
       var index = await showMenu(
@@ -826,9 +837,12 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         elevation: 8,
       );
       if (index != null) {
-        if (index < mobileActionMenus.length) {
+        if (index == themeIndex) {
+          Navigator.push(context,
+              MaterialPageRoute(builder: (_) => const ThemeSettingsPage()));
+        } else if (index < mobileActionMenus.length) {
           mobileActionMenus[index].onPressed?.call();
-        } else if (index < mobileActionMenus.length + more.length) {
+        } else if (index < mobileActionMenus.length + menus.length) {
           menus[index - mobileActionMenus.length].onPressed?.call();
         }
       }

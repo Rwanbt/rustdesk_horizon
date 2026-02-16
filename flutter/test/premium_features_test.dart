@@ -49,8 +49,6 @@ void main() {
       File('lib/common/widgets/remote_input.dart').readAsStringSync();
   final gestureMapModelSource =
       File('lib/models/gesture_map_model.dart').readAsStringSync();
-  final gestureSettingsPageSource =
-      File('lib/mobile/pages/gesture_settings_page.dart').readAsStringSync();
   final themeSettingsPageSource =
       File('lib/mobile/pages/theme_settings_page.dart').readAsStringSync();
 
@@ -60,11 +58,9 @@ void main() {
 
   group('Feature 4: Edge-Clamped Zoom', () {
     test('minScale does NOT divide by 1.5', () {
-      // Find the minScale getter in model.dart
       final minScaleIdx = modelSource.indexOf('double get minScale');
       expect(minScaleIdx != -1, 'minScale getter exists in model.dart');
 
-      // Get the body of the minScale getter (up to the next semicolon or closing brace)
       final bodyStart = modelSource.indexOf('{', minScaleIdx);
       final bodyEnd = modelSource.indexOf('}', bodyStart);
       final body = modelSource.substring(bodyStart, bodyEnd + 1);
@@ -78,7 +74,6 @@ void main() {
     test('updateScale still clamps between min and max', () {
       final updateScaleIdx = modelSource.indexOf('void updateScale(');
       if (updateScaleIdx == -1) {
-        // updateScale might have a different signature
         final altIdx = modelSource.indexOf('updateScale(');
         expect(altIdx != -1, 'updateScale method exists (any signature)');
         if (altIdx != -1) {
@@ -125,7 +120,6 @@ void main() {
       final showCursorIdx = remotePageSource.indexOf('showCursorPaint');
       expect(showCursorIdx != -1, 'showCursorPaint exists');
 
-      // Find the body
       final bodyArea =
           remotePageSource.substring(showCursorIdx, showCursorIdx + 200);
       expect(bodyArea.contains('_hideLocalCursor'),
@@ -186,10 +180,8 @@ void main() {
     });
 
     test('FAB uses dynamicAccent', () {
-      // Search globally — FAB and backgroundColor may be far apart
       expect(remotePageSource.contains('FloatingActionButton'),
           'FloatingActionButton exists');
-      // Check that backgroundColor: MyTheme.dynamicAccent is used somewhere near a FAB
       expect(remotePageSource.contains('backgroundColor: MyTheme.dynamicAccent'),
           'FAB uses dynamicAccent for backgroundColor');
     });
@@ -216,6 +208,15 @@ void main() {
           'Navigation to ThemeSettingsPage exists');
       expect(settingsPageSource.contains('Icons.palette'),
           'Palette icon used for theme tile');
+    });
+
+    test('Theme Customization accessible from remote session', () {
+      expect(remotePageSource.contains('ThemeSettingsPage'),
+          'remote_page.dart references ThemeSettingsPage');
+      expect(remotePageSource.contains('Theme Customization'),
+          'Theme Customization menu entry in remote session');
+      expect(remotePageSource.contains('Icons.palette'),
+          'Palette icon used in remote session menu');
     });
   });
 
@@ -258,7 +259,6 @@ void main() {
     test('Default mouse mode mappings', () {
       expect(gestureMapModelSource.contains('defaultMouseMode'),
           'defaultMouseMode map exists');
-      // Check key default mappings
       expect(
           gestureMapModelSource.contains(
               'GestureInput.tap1: GestureAction.leftClick'),
@@ -318,17 +318,50 @@ void main() {
           'gestureActionLabels map exists');
     });
 
-    test('gesture_settings_page.dart exists with correct structure', () {
-      expect(gestureSettingsPageSource.contains('class GestureSettingsPage'),
-          'GestureSettingsPage class exists');
-      expect(gestureSettingsPageSource.contains('SegmentedButton'),
-          'Mouse/Touch mode toggle exists');
-      expect(gestureSettingsPageSource.contains('GestureInput.values'),
-          'Iterates over all GestureInput values');
-      expect(gestureSettingsPageSource.contains('RadioListTile'),
-          'Action picker uses RadioListTile');
-      expect(gestureSettingsPageSource.contains('resetDefaults'),
+    test('GestureMapModel helper methods for integrated panel', () {
+      expect(gestureMapModelSource.contains('iconForInput'),
+          'iconForInput method exists');
+      expect(gestureMapModelSource.contains('cardInputLabels'),
+          'cardInputLabels map exists');
+      expect(gestureMapModelSource.contains('displayedTouchInputs'),
+          'displayedTouchInputs list exists');
+      expect(gestureMapModelSource.contains('displayedMouseInputs'),
+          'displayedMouseInputs list exists');
+      expect(gestureMapModelSource.contains('configurableInputs'),
+          'configurableInputs set exists');
+      expect(gestureMapModelSource.contains('isDefault'),
+          'isDefault method exists');
+    });
+
+    test('Gesture settings merged into gesture_help.dart', () {
+      // GestureSettingsPage was deleted — functionality is now inline
+      expect(!File('lib/mobile/pages/gesture_settings_page.dart').existsSync(),
+          'gesture_settings_page.dart was deleted (merged into gesture_help)');
+      expect(gestureHelpSource.contains('_showActionPicker'),
+          'Action picker dialog is inline in gesture_help.dart');
+      expect(gestureHelpSource.contains('RadioListTile'),
+          'RadioListTile used for action selection');
+      expect(gestureHelpSource.contains('GestureMapModel.getAction'),
+          'gesture_help reads actions from GestureMapModel');
+      expect(gestureHelpSource.contains('GestureMapModel.setAction'),
+          'gesture_help writes actions via GestureMapModel');
+      expect(gestureHelpSource.contains('resetDefaults'),
           'Reset to defaults button exists');
+      expect(gestureHelpSource.contains('_buildGestureCards'),
+          'Dynamic gesture cards builder exists');
+    });
+
+    test('GestureInfo widget supports custom and tappable cards', () {
+      expect(gestureHelpSource.contains('isCustom'),
+          'GestureInfo has isCustom parameter');
+      expect(gestureHelpSource.contains('VoidCallback? onTap'),
+          'GestureInfo has onTap parameter');
+      expect(gestureHelpSource.contains('InkWell'),
+          'Tappable cards use InkWell');
+      expect(gestureHelpSource.contains('FontWeight.bold'),
+          'Custom mappings shown in bold');
+      expect(gestureHelpSource.contains('Icons.edit'),
+          'Edit icon shown on configurable cards');
     });
 
     test('remote_input.dart integrates gesture mapping', () {
@@ -341,7 +374,6 @@ void main() {
     });
 
     test('Mouse mode callbacks use gesture mapping', () {
-      // Use global search — methods can be long, the dispatch call may be far from the signature
       expect(remoteInputSource.contains('GestureInput.tap1'),
           'onTap uses GestureInput.tap1');
       expect(remoteInputSource.contains('GestureInput.doubleTap'),
@@ -350,6 +382,16 @@ void main() {
           'onLongPress uses GestureInput.longPress');
       expect(remoteInputSource.contains('GestureInput.tap2'),
           'onDoubleFinerTap uses GestureInput.tap2');
+    });
+
+    test('Touch mode also uses gesture mapping', () {
+      // Touch mode should now dispatch via GestureMapModel (getAction(true, ...))
+      expect(remoteInputSource.contains('GestureMapModel.getAction(true, GestureInput.tap1)'),
+          'Touch mode tap1 uses GestureMapModel');
+      expect(remoteInputSource.contains('GestureMapModel.getAction(true, GestureInput.doubleTap)'),
+          'Touch mode doubleTap uses GestureMapModel');
+      expect(remoteInputSource.contains('GestureMapModel.getAction(true, GestureInput.longPress)'),
+          'Touch mode longPress uses GestureMapModel');
     });
 
     test('_dispatchTapAction handles all tap actions', () {
@@ -371,15 +413,6 @@ void main() {
           'Checks for scroll action');
       expect(remoteInputSource.contains('GestureAction.panCanvas'),
           'Checks for panCanvas action');
-    });
-
-    test('Gesture Settings button in gesture_help.dart', () {
-      expect(gestureHelpSource.contains('GestureSettingsPage'),
-          'gesture_help.dart references GestureSettingsPage');
-      expect(gestureHelpSource.contains('Gesture Settings'),
-          'Gesture Settings button text exists');
-      expect(gestureHelpSource.contains('Navigator.push'),
-          'Navigation to GestureSettingsPage exists');
     });
   });
 
@@ -449,7 +482,6 @@ void main() {
     test('OrientationBuilder calls _sendOrientationResolution', () {
       final obIdx = remotePageSource.indexOf('OrientationBuilder');
       expect(obIdx != -1, 'OrientationBuilder exists');
-      // Use wider window (OrientationBuilder callback may be large)
       final end = (obIdx + 1200).clamp(0, remotePageSource.length);
       final obBody = remotePageSource.substring(obIdx, end);
       expect(obBody.contains('kOptionAutoRotation'),
@@ -459,7 +491,6 @@ void main() {
     });
 
     test('Resolution swap logic in _sendOrientationResolution', () {
-      // Find the method definition (void _sendOrientationResolution)
       final idx = remotePageSource.indexOf('void _sendOrientationResolution');
       expect(idx != -1, '_sendOrientationResolution method defined');
       if (idx != -1) {
@@ -504,18 +535,18 @@ void main() {
   });
 
   // =====================================================================
-  // Structural: New files exist
+  // Structural: Files exist
   // =====================================================================
 
-  group('Structural: New files exist', () {
+  group('Structural: Files', () {
     test('gesture_map_model.dart exists', () {
       expect(File('lib/models/gesture_map_model.dart').existsSync(),
           'gesture_map_model.dart exists');
     });
 
-    test('gesture_settings_page.dart exists', () {
-      expect(File('lib/mobile/pages/gesture_settings_page.dart').existsSync(),
-          'gesture_settings_page.dart exists');
+    test('gesture_settings_page.dart removed (merged into gesture_help)', () {
+      expect(!File('lib/mobile/pages/gesture_settings_page.dart').existsSync(),
+          'gesture_settings_page.dart removed');
     });
 
     test('theme_settings_page.dart exists', () {
@@ -525,37 +556,33 @@ void main() {
   });
 
   // =====================================================================
-  // UI Integrity: Gesture help centering
+  // UI Integrity: Gesture help centering and layout
   // =====================================================================
 
   group('UI Integrity: Gesture help layout', () {
     test('ToggleSwitch is centered in gesture_help.dart', () {
-      // The ToggleSwitch should be inside a Center widget or centered layout
       final toggleIdx = gestureHelpSource.indexOf('ToggleSwitch(');
       expect(toggleIdx != -1, 'ToggleSwitch exists in gesture_help.dart');
 
-      // Check that the parent column uses center alignment
-      // or the ToggleSwitch is wrapped in a Center
       final beforeToggle = gestureHelpSource.substring(
           toggleIdx > 200 ? toggleIdx - 200 : 0, toggleIdx);
       final isCentered = beforeToggle.contains('Center') ||
           beforeToggle.contains('mainAxisAlignment: MainAxisAlignment.center') ||
           beforeToggle.contains('crossAxisAlignment: CrossAxisAlignment.center');
       expect(isCentered,
-          'ToggleSwitch layout uses centering (Center widget or center alignment)');
+          'ToggleSwitch layout uses centering');
     });
 
-    test('Gesture Settings button does not break centering', () {
-      final gsIdx = gestureHelpSource.indexOf('Gesture Settings');
-      expect(gsIdx != -1, 'Gesture Settings button exists');
-      // The button should be centered, not right-aligned
-      final beforeGS = gestureHelpSource.substring(
-          gsIdx > 300 ? gsIdx - 300 : 0, gsIdx);
-      final hasRightAlign = beforeGS.contains('Alignment.centerRight');
-      // This is actually a bug — should NOT be right-aligned
-      if (hasRightAlign) {
-        print('    NOTE: Gesture Settings button is right-aligned — should be centered');
-      }
+    test('Gesture cards are dynamic (not hardcoded)', () {
+      // The old hardcoded lists should be gone
+      expect(!gestureHelpSource.contains("translate(\"Left Mouse\")"),
+          'No hardcoded "Left Mouse" text');
+      expect(!gestureHelpSource.contains("translate(\"Right Mouse\")"),
+          'No hardcoded "Right Mouse" text');
+      expect(gestureHelpSource.contains('_buildGestureCards'),
+          'Dynamic _buildGestureCards method used');
+      expect(gestureHelpSource.contains('gestureActionLabels'),
+          'Uses gestureActionLabels from model');
     });
   });
 

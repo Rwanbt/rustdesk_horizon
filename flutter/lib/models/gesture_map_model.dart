@@ -1,3 +1,4 @@
+import 'package:flutter/widgets.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 
@@ -109,5 +110,78 @@ class GestureMapModel {
       final key = _optionKey(touchMode, input);
       await bind.mainSetLocalOption(key: key, value: '');
     }
+  }
+
+  // --- Helpers for integrated gesture help panel ---
+
+  static const String _iconFamily = 'gestureicons';
+
+  static IconData iconForInput(GestureInput input) {
+    switch (input) {
+      case GestureInput.tap1:
+        return const IconData(0xe9cd, fontFamily: _iconFamily);
+      case GestureInput.longPress:
+        return const IconData(0xe66b, fontFamily: _iconFamily);
+      case GestureInput.pan1:
+        return const IconData(0xe68f, fontFamily: _iconFamily);
+      case GestureInput.holdDrag:
+        return const IconData(0xe68f, fontFamily: _iconFamily);
+      case GestureInput.pan3:
+        return const IconData(0xe687, fontFamily: _iconFamily);
+      case GestureInput.pan2:
+        return const IconData(0xe686, fontFamily: _iconFamily);
+      case GestureInput.pinch:
+        return const IconData(0xe66a, fontFamily: _iconFamily);
+      case GestureInput.tap2:
+        return const IconData(0xe9cd, fontFamily: _iconFamily);
+      case GestureInput.doubleTap:
+        return const IconData(0xe691, fontFamily: _iconFamily);
+    }
+  }
+
+  /// Friendly labels for the 6 displayed gesture cards.
+  static const Map<GestureInput, String> cardInputLabels = {
+    GestureInput.tap1: 'One-Finger Tap',
+    GestureInput.longPress: 'One-Long Tap',
+    GestureInput.pan1: 'One-Finger Move',
+    GestureInput.holdDrag: 'Double Tap & Move',
+    GestureInput.pan3: 'Three-Finger vertically',
+    GestureInput.pan2: 'Two-Finger Move',
+    GestureInput.pinch: 'Pinch to Zoom',
+    GestureInput.tap2: 'Two-Finger Tap',
+    GestureInput.doubleTap: 'Double Tap',
+  };
+
+  static const List<GestureInput> displayedTouchInputs = [
+    GestureInput.tap1,
+    GestureInput.longPress,
+    GestureInput.pan1,
+    GestureInput.pan3,
+    GestureInput.pan2,
+    GestureInput.pinch,
+  ];
+
+  static const List<GestureInput> displayedMouseInputs = [
+    GestureInput.tap1,
+    GestureInput.longPress,
+    GestureInput.holdDrag,
+    GestureInput.pan3,
+    GestureInput.pan2,
+    GestureInput.pinch,
+  ];
+
+  static const Set<GestureInput> configurableInputs = {
+    GestureInput.tap1,
+    GestureInput.longPress,
+    GestureInput.pan1,
+    GestureInput.holdDrag,
+    GestureInput.pan2,
+    GestureInput.pan3,
+  };
+
+  static bool isDefault(bool touchMode, GestureInput input) {
+    final current = getAction(touchMode, input);
+    final defaults = touchMode ? defaultTouchMode : defaultMouseMode;
+    return current == (defaults[input] ?? GestureAction.nothing);
   }
 }
