@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/consts.dart';
+import 'package:flutter_hbb/models/gesture_map_model.dart';
 import 'package:flutter_hbb/models/input_model.dart';
 import 'package:flutter_hbb/models/model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
-import 'package:flutter_hbb/mobile/pages/gesture_settings_page.dart';
 import 'package:get/get.dart';
 import 'package:toggle_switch/toggle_switch.dart';
 
@@ -69,11 +69,70 @@ class _GestureHelpState extends State<GestureHelp> {
   }
 
   /// Helper to exit relative mouse mode when certain conditions are met.
-  /// This reduces code duplication across multiple UI callbacks.
   void _exitRelativeMouseModeIf(bool condition) {
     if (condition) {
       widget.inputModel?.setRelativeMouseMode(false);
     }
+  }
+
+  void _showActionPicker(GestureInput input, GestureAction currentAction) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(translate(
+            GestureMapModel.cardInputLabels[input] ?? input.name)),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: GestureAction.values.map((action) {
+              return RadioListTile<GestureAction>(
+                title: Text(translate(
+                    gestureActionLabels[action] ?? action.name)),
+                value: action,
+                groupValue: currentAction,
+                onChanged: (v) async {
+                  if (v != null) {
+                    await GestureMapModel.setAction(
+                        _touchMode, input, v);
+                    Navigator.pop(ctx);
+                    setState(() {});
+                  }
+                },
+              );
+            }).toList(),
+          ),
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _buildGestureCards(double width) {
+    final inputs = _touchMode
+        ? GestureMapModel.displayedTouchInputs
+        : GestureMapModel.displayedMouseInputs;
+
+    return inputs.map((input) {
+      final action = GestureMapModel.getAction(_touchMode, input);
+      final isConfigurable =
+          GestureMapModel.configurableInputs.contains(input);
+      final isCustom = !GestureMapModel.isDefault(_touchMode, input);
+      final actionLabel =
+          translate(gestureActionLabels[action] ?? action.name);
+      final inputLabel = translate(
+          GestureMapModel.cardInputLabels[input] ?? input.name);
+      final icon = GestureMapModel.iconForInput(input);
+
+      return GestureInfo(
+        width: width,
+        icon: icon,
+        fromText: inputLabel,
+        toText: actionLabel,
+        isCustom: isCustom,
+        onTap: isConfigurable
+            ? () => _showActionPicker(input, action)
+            : null,
+      );
+    }).toList();
   }
 
   @override
@@ -91,7 +150,6 @@ class _GestureHelpState extends State<GestureHelp> {
             padding: const EdgeInsets.symmetric(vertical: 12.0),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
                 Center(
                   child: Column(
@@ -117,22 +175,12 @@ class _GestureHelpState extends State<GestureHelp> {
                               _selectedIndex = index ?? 0;
                               _touchMode = index == 0 ? false : true;
                               widget.onTouchModeChange(_touchMode);
-                              // Exit relative mouse mode when switching to touch mode
                               _exitRelativeMouseModeIf(_touchMode);
                             }
                           });
                         },
                       ),
-                      const SizedBox(height: 4),
-                      TextButton.icon(
-                        icon: const Icon(Icons.settings, size: 18),
-                        label: Text(translate('Gesture Settings')),
-                        onPressed: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (_) =>
-                                    const GestureSettingsPage())),
-                      ),
+                      const SizedBox(height: 8),
                       Transform.translate(
                         offset: const Offset(-10.0, 0.0),
                         child: Row(
@@ -143,7 +191,6 @@ class _GestureHelpState extends State<GestureHelp> {
                               onChanged: (value) async {
                                 if (value == null) return;
                                 await _virtualMouseMode.toggleVirtualMouse();
-                                // Exit relative mouse mode when virtual mouse is hidden
                                 _exitRelativeMouseModeIf(
                                     !_virtualMouseMode.showVirtualMouse);
                                 setState(() {});
@@ -152,7 +199,6 @@ class _GestureHelpState extends State<GestureHelp> {
                             InkWell(
                               onTap: () async {
                                 await _virtualMouseMode.toggleVirtualMouse();
-                                // Exit relative mouse mode when virtual mouse is hidden
                                 _exitRelativeMouseModeIf(
                                     !_virtualMouseMode.showVirtualMouse);
                                 setState(() {});
@@ -164,7 +210,6 @@ class _GestureHelpState extends State<GestureHelp> {
                       ),
                       if (_touchMode && _virtualMouseMode.showVirtualMouse)
                         Padding(
-                          // Indent "Virtual mouse size"
                           padding: const EdgeInsets.only(left: 24.0),
                           child: SizedBox(
                             width: 260,
@@ -216,7 +261,6 @@ class _GestureHelpState extends State<GestureHelp> {
                         Transform.translate(
                           offset: const Offset(-10.0, -12.0),
                           child: Padding(
-                              // Indent "Show virtual joystick"
                               padding: const EdgeInsets.only(left: 24.0),
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
@@ -228,7 +272,6 @@ class _GestureHelpState extends State<GestureHelp> {
                                       if (value == null) return;
                                       await _virtualMouseMode
                                           .toggleVirtualJoystick();
-                                      // Exit relative mouse mode when joystick is hidden
                                       _exitRelativeMouseModeIf(
                                           !_virtualMouseMode
                                               .showVirtualJoystick);
@@ -239,7 +282,6 @@ class _GestureHelpState extends State<GestureHelp> {
                                     onTap: () async {
                                       await _virtualMouseMode
                                           .toggleVirtualJoystick();
-                                      // Exit relative mouse mode when joystick is hidden
                                       _exitRelativeMouseModeIf(
                                           !_virtualMouseMode
                                               .showVirtualJoystick);
@@ -251,7 +293,7 @@ class _GestureHelpState extends State<GestureHelp> {
                                 ],
                               )),
                         ),
-                      // Relative mouse mode option - only visible when joystick is shown
+                      // Relative mouse mode option
                       if (!_touchMode &&
                           _virtualMouseMode.showVirtualMouse &&
                           _virtualMouseMode.showVirtualJoystick &&
@@ -259,7 +301,6 @@ class _GestureHelpState extends State<GestureHelp> {
                         Obx(() => Transform.translate(
                               offset: const Offset(-10.0, -24.0),
                               child: Padding(
-                                  // Indent further for 'Relative mouse mode'
                                   padding: const EdgeInsets.only(left: 48.0),
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
@@ -321,75 +362,22 @@ class _GestureHelpState extends State<GestureHelp> {
                     ],
                   ),
                 ),
+                const SizedBox(height: 4),
+                // Reset to default button
+                TextButton.icon(
+                  icon: const Icon(Icons.refresh, size: 16),
+                  label: Text(translate('Reset to default'),
+                      style: const TextStyle(fontSize: 12)),
+                  onPressed: () async {
+                    await GestureMapModel.resetDefaults(_touchMode);
+                    setState(() {});
+                  },
+                ),
                 Container(
                     child: Wrap(
                   spacing: space,
                   runSpacing: 2 * space,
-                  children: _touchMode
-                      ? [
-                          GestureInfo(
-                              width,
-                              GestureIcons.iconMobileTouch,
-                              translate("One-Finger Tap"),
-                              translate("Left Mouse")),
-                          GestureInfo(
-                              width,
-                              GestureIcons.iconGesturePressHold,
-                              translate("One-Long Tap"),
-                              translate("Right Mouse")),
-                          GestureInfo(
-                              width,
-                              GestureIcons.iconGestureFSwipeRight,
-                              translate("One-Finger Move"),
-                              translate("Mouse Drag")),
-                          GestureInfo(
-                              width,
-                              GestureIcons.iconGestureFThreeFingers,
-                              translate("Three-Finger vertically"),
-                              translate("Mouse Wheel")),
-                          GestureInfo(
-                              width,
-                              GestureIcons.iconGestureFDrag,
-                              translate("Two-Finger Move"),
-                              translate("Canvas Move")),
-                          GestureInfo(
-                              width,
-                              GestureIcons.iconGesturePinch,
-                              translate("Pinch to Zoom"),
-                              translate("Canvas Zoom")),
-                        ]
-                      : [
-                          GestureInfo(
-                              width,
-                              GestureIcons.iconMobileTouch,
-                              translate("One-Finger Tap"),
-                              translate("Left Mouse")),
-                          GestureInfo(
-                              width,
-                              GestureIcons.iconGesturePressHold,
-                              translate("One-Long Tap"),
-                              translate("Right Mouse")),
-                          GestureInfo(
-                              width,
-                              GestureIcons.iconGestureFSwipeRight,
-                              translate("Double Tap & Move"),
-                              translate("Mouse Drag")),
-                          GestureInfo(
-                              width,
-                              GestureIcons.iconGestureFThreeFingers,
-                              translate("Three-Finger vertically"),
-                              translate("Mouse Wheel")),
-                          GestureInfo(
-                              width,
-                              GestureIcons.iconGestureFDrag,
-                              translate("Two-Finger Move"),
-                              translate("Canvas Move")),
-                          GestureInfo(
-                              width,
-                              GestureIcons.iconGesturePinch,
-                              translate("Pinch to Zoom"),
-                              translate("Canvas Zoom")),
-                        ],
+                  children: _buildGestureCards(width),
                 )),
               ],
             )));
@@ -397,41 +385,67 @@ class _GestureHelpState extends State<GestureHelp> {
 }
 
 class GestureInfo extends StatelessWidget {
-  const GestureInfo(this.width, this.icon, this.fromText, this.toText,
-      {Key? key})
-      : super(key: key);
+  const GestureInfo({
+    Key? key,
+    required this.width,
+    required this.icon,
+    required this.fromText,
+    required this.toText,
+    this.isCustom = false,
+    this.onTap,
+  }) : super(key: key);
 
   final String fromText;
   final String toText;
   final IconData icon;
   final double width;
-
-  final iconSize = 35.0;
-  final iconColor = MyTheme.accent;
+  final bool isCustom;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    final accentColor = MyTheme.accent;
+    final iconColor = isCustom ? accentColor : accentColor;
+    const iconSize = 35.0;
+
+    final content = Container(
         width: width,
         child: Column(
           children: [
-            Icon(
-              icon,
-              size: iconSize,
-              color: iconColor,
+            Stack(
+              alignment: Alignment.topRight,
+              children: [
+                Icon(icon, size: iconSize, color: iconColor),
+                if (onTap != null)
+                  Icon(Icons.edit, size: 10,
+                      color: Theme.of(context).hintColor.withOpacity(0.6)),
+              ],
             ),
             SizedBox(height: 6),
             Text(fromText,
                 textAlign: TextAlign.center,
-                style:
-                    TextStyle(fontSize: 9, color: Theme.of(context).hintColor)),
+                style: TextStyle(
+                    fontSize: 9, color: Theme.of(context).hintColor)),
             SizedBox(height: 3),
             Text(toText,
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                    fontSize: 12,
-                    color: Theme.of(context).textTheme.bodySmall?.color))
+                  fontSize: 12,
+                  fontWeight: isCustom ? FontWeight.bold : FontWeight.normal,
+                  color: isCustom
+                      ? accentColor
+                      : Theme.of(context).textTheme.bodySmall?.color,
+                )),
           ],
         ));
+
+    if (onTap != null) {
+      return InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: content,
+      );
+    }
+    return content;
   }
 }

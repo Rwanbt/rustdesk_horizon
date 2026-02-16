@@ -188,11 +188,19 @@ class _RawTouchGestureDetectorRegionState
       final isMoved =
           await ffi.cursorModel.move(d.localPosition.dx, d.localPosition.dy);
       if (isMoved) {
-        // If pan already handled 'down', don't send it again.
-        if (lastTapDownDetails != null && !_touchModePanStarted) {
-          await inputModel.tapDown(MouseButtons.left);
+        final action = GestureMapModel.getAction(true, GestureInput.tap1);
+        if (action == GestureAction.doubleClick) {
+          await inputModel.tap(MouseButtons.left);
+          await inputModel.tap(MouseButtons.left);
+        } else {
+          final btn = action == GestureAction.rightClick
+              ? MouseButtons.right
+              : MouseButtons.left;
+          if (lastTapDownDetails != null && !_touchModePanStarted) {
+            await inputModel.tapDown(btn);
+          }
+          await inputModel.tapUp(btn);
         }
-        await inputModel.tapUp(MouseButtons.left);
       }
     }
   }
@@ -250,8 +258,7 @@ class _RawTouchGestureDetectorRegionState
       await _dispatchTapAction(GestureMapModel.getAction(false, GestureInput.doubleTap));
       return;
     }
-    await inputModel.tap(MouseButtons.left);
-    await inputModel.tap(MouseButtons.left);
+    await _dispatchTapAction(GestureMapModel.getAction(true, GestureInput.doubleTap));
   }
 
   onLongPressDown(LongPressDownDetails d) async {
@@ -305,7 +312,7 @@ class _RawTouchGestureDetectorRegionState
         await _dispatchTapAction(GestureMapModel.getAction(false, GestureInput.longPress));
         return;
       }
-      await inputModel.tap(MouseButtons.right);
+      await _dispatchTapAction(GestureMapModel.getAction(true, GestureInput.longPress));
     } else {
       // It's better to send a message to tell the controlled device that the long press event is triggered.
       // We're now using a `TimerTask` in `InputService.kt` to decide whether to trigger the long press event.
@@ -519,11 +526,26 @@ class _RawTouchGestureDetectorRegionState
                     .toJson()));
       }
     } else {
-      // mobile
-      ffi.canvasModel.updateScale(d.scale / _scale, d.focalPoint);
-      _scale = d.scale;
-      ffi.canvasModel.panX(d.focalPointDelta.dx);
-      ffi.canvasModel.panY(d.focalPointDelta.dy);
+      // mobile — check pan2 mapping for two-finger move behavior
+      final pan2Action = GestureMapModel.getAction(
+          ffiModel.touchMode, GestureInput.pan2);
+      if (pan2Action == GestureAction.scroll) {
+        // Two-finger scroll (like a trackpad)
+        _mouseScrollIntegral += d.focalPointDelta.dy / 4;
+        if (_mouseScrollIntegral > 1) {
+          inputModel.scroll(1);
+          _mouseScrollIntegral = 0;
+        } else if (_mouseScrollIntegral < -1) {
+          inputModel.scroll(-1);
+          _mouseScrollIntegral = 0;
+        }
+      } else {
+        // Default: canvas pan + pinch zoom
+        ffi.canvasModel.updateScale(d.scale / _scale, d.focalPoint);
+        _scale = d.scale;
+        ffi.canvasModel.panX(d.focalPointDelta.dx);
+        ffi.canvasModel.panY(d.focalPointDelta.dy);
+      }
     }
   }
 
