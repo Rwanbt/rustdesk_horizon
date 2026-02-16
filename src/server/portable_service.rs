@@ -119,7 +119,7 @@ impl SharedMemory {
 
     fn flink(name: String) -> ResultType<String> {
         let mut dir = crate::platform::user_accessible_folder()?;
-        dir = dir.join(hbb_common::config::APP_NAME_SYS.read().unwrap().clone());
+        dir = dir.join(hbb_common::config::APP_NAME.read().unwrap().clone());
         if !dir.exists() {
             std::fs::create_dir(&dir)?;
             set_path_permission(&dir, "F").ok();
