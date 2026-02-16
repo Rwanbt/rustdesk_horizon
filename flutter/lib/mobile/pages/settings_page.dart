@@ -18,6 +18,7 @@ import '../../consts.dart';
 import '../../models/model.dart';
 import '../../models/platform_model.dart';
 import '../widgets/dialog.dart';
+import 'theme_settings_page.dart';
 import 'home_page.dart';
 import 'scan_page.dart';
 
@@ -675,6 +676,27 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
             },
     ));
 
+    enhancementsTiles.add(SettingsTile.switchTile(
+      initialValue:
+          bind.mainGetLocalOption(key: kOptionAutoOpenKeyboard) == 'Y',
+      title: Text(translate('Auto open keyboard')),
+      onToggle: (value) async {
+        await bind.mainSetLocalOption(
+            key: kOptionAutoOpenKeyboard, value: value ? 'Y' : '');
+        setState(() {});
+      },
+    ));
+    enhancementsTiles.add(SettingsTile.switchTile(
+      initialValue:
+          bind.mainGetLocalOption(key: kOptionAutoRotation) == 'Y',
+      title: Text(translate('Auto rotation')),
+      onToggle: (value) async {
+        await bind.mainSetLocalOption(
+            key: kOptionAutoRotation, value: value ? 'Y' : '');
+        setState(() {});
+      },
+    ));
+
     final disabledSettings = bind.isDisableSettings();
     final hideSecuritySettings =
         bind.mainGetBuildinOption(key: kOptionHideSecuritySetting) == 'Y';
@@ -807,6 +829,15 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
                 : Icons.light_mode),
             onPressed: (context) {
               showThemeSettings(gFFI.dialogManager);
+            },
+          ),
+          SettingsTile(
+            title: Text(translate('Theme Customization')),
+            leading: Icon(Icons.palette),
+            trailing: Icon(Icons.arrow_forward_ios),
+            onPressed: (context) {
+              Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const ThemeSettingsPage()));
             },
           ),
           if (!bind.isDisableAccount())

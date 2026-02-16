@@ -11,6 +11,8 @@ import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/model.dart';
 import 'package:flutter_hbb/models/input_model.dart';
 
+import 'package:flutter_hbb/models/gesture_map_model.dart';
+
 import './gestures.dart';
 
 class RawKeyFocusScope extends StatelessWidget {
@@ -118,6 +120,24 @@ class _RawTouchGestureDetectorRegionState
   bool get handleTouch => (isDesktop || isWebDesktop) || ffiModel.touchMode;
   SessionID get sessionId => ffi.sessionId;
 
+  /// Dispatch a tap-type gesture action (used by configurable gesture mapping).
+  Future<void> _dispatchTapAction(GestureAction action) async {
+    switch (action) {
+      case GestureAction.leftClick:
+        await inputModel.tap(MouseButtons.left);
+        break;
+      case GestureAction.rightClick:
+        await inputModel.tap(MouseButtons.right);
+        break;
+      case GestureAction.doubleClick:
+        await inputModel.tap(MouseButtons.left);
+        await inputModel.tap(MouseButtons.left);
+        break;
+      default:
+        break;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return RawGestureDetector(
@@ -192,8 +212,8 @@ class _RawTouchGestureDetectorRegionState
       if (shouldBlockMouseModeEvent()) {
         return;
       }
-      // Mobile, "Mouse mode"
-      await inputModel.tap(MouseButtons.left);
+      // Mobile, "Mouse mode" — configurable via gesture mapping
+      await _dispatchTapAction(GestureMapModel.getAction(false, GestureInput.tap1));
     }
   }
 
@@ -227,6 +247,8 @@ class _RawTouchGestureDetectorRegionState
       if (shouldBlockMouseModeEvent()) {
         return;
       }
+      await _dispatchTapAction(GestureMapModel.getAction(false, GestureInput.doubleTap));
+      return;
     }
     await inputModel.tap(MouseButtons.left);
     await inputModel.tap(MouseButtons.left);
@@ -280,6 +302,8 @@ class _RawTouchGestureDetectorRegionState
         if (shouldBlockMouseModeEvent()) {
           return;
         }
+        await _dispatchTapAction(GestureMapModel.getAction(false, GestureInput.longPress));
+        return;
       }
       await inputModel.tap(MouseButtons.right);
     } else {
@@ -322,7 +346,9 @@ class _RawTouchGestureDetectorRegionState
     // We can't use `d.localPosition` here because it's always (0, 0) on desktop.
     final isDesktopInRemoteRect = (isDesktop || isWebDesktop) &&
         ffi.cursorModel.isInRemoteRect(_doubleFinerTapPosition);
-    if (isMobileMouseMode || isDesktopInRemoteRect) {
+    if (isMobileMouseMode) {
+      await _dispatchTapAction(GestureMapModel.getAction(false, GestureInput.tap2));
+    } else if (isDesktopInRemoteRect) {
       await inputModel.tap(MouseButtons.right);
     }
   }
@@ -526,13 +552,20 @@ class _RawTouchGestureDetectorRegionState
   get onThreeFingerVerticalDragUpdate => ffi.ffiModel.isPeerAndroid
       ? null
       : (d) {
-          _mouseScrollIntegral += d.delta.dy / 4;
-          if (_mouseScrollIntegral > 1) {
-            inputModel.scroll(1);
-            _mouseScrollIntegral = 0;
-          } else if (_mouseScrollIntegral < -1) {
-            inputModel.scroll(-1);
-            _mouseScrollIntegral = 0;
+          final action = GestureMapModel.getAction(
+              ffiModel.touchMode, GestureInput.pan3);
+          if (action == GestureAction.scroll) {
+            _mouseScrollIntegral += d.delta.dy / 4;
+            if (_mouseScrollIntegral > 1) {
+              inputModel.scroll(1);
+              _mouseScrollIntegral = 0;
+            } else if (_mouseScrollIntegral < -1) {
+              inputModel.scroll(-1);
+              _mouseScrollIntegral = 0;
+            }
+          } else if (action == GestureAction.panCanvas) {
+            ffi.canvasModel.panX(d.delta.dx);
+            ffi.canvasModel.panY(d.delta.dy);
           }
         };
 

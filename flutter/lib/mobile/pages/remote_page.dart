@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -116,6 +117,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     WakelockManager.enable(_uniqueKey);
     _physicalFocusNode.requestFocus();
     gFFI.inputModel.listenToMouse(true);
+    gFFI.openKeyboardCallback = openKeyboard;
     gFFI.qualityMonitorModel.checkShowQualityMonitor(sessionId);
     keyboardSubscription =
         keyboardVisibilityController.onChange.listen(onSoftKeyboardChanged);
@@ -176,6 +178,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     await gFFI.invokeMethod("enable_soft_keyboard", true);
     _mobileFocusNode.dispose();
     _physicalFocusNode.dispose();
+    gFFI.openKeyboardCallback = null;
     await gFFI.close();
     _timer?.cancel();
     _hideBarTimer?.cancel();
@@ -442,7 +445,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                         : Icons.expand_less,
                     color: Colors.white,
                   ),
-                  backgroundColor: MyTheme.accent,
+                  backgroundColor: MyTheme.dynamicAccent,
                   onPressed: () {
                     setState(() {
                       if (keyboardIsVisible) {
@@ -495,6 +498,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                                       .resetMobileActionsOverlay(ffi: gFFI);
                                   _currentOrientation = orientation;
                                   gFFI.canvasModel.updateViewStyle();
+                                  if (bind.mainGetLocalOption(
+                                          key: kOptionAutoRotation) ==
+                                      'Y') {
+                                    _sendOrientationResolution(orientation);
+                                  }
                                 });
                               }
                               return Container(
@@ -536,13 +544,19 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   Widget getBottomAppBar() {
     final ffiModel = Provider.of<FfiModel>(context);
-    return BottomAppBar(
-      elevation: 10,
-      color: MyTheme.accent,
-      child: Row(
-        mainAxisSize: MainAxisSize.max,
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: <Widget>[
+    return ClipRRect(
+      child: BackdropFilter(
+        filter: ui.ImageFilter.blur(
+            sigmaX: MyTheme.isSoberTheme ? 10 : 0,
+            sigmaY: MyTheme.isSoberTheme ? 10 : 0),
+        child: BottomAppBar(
+          elevation: MyTheme.isSoberTheme ? 0 : 10,
+          color: MyTheme.dynamicAccent.withOpacity(
+              MyTheme.isSoberTheme ? 0.5 : 1.0),
+          child: Row(
+            mainAxisSize: MainAxisSize.max,
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: <Widget>[
           Row(
               children: <Widget>[
                     IconButton(
@@ -631,13 +645,44 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               )),
         ],
       ),
+    ),
+      ),
     );
   }
+
+  bool get _hideLocalCursor =>
+      bind.mainGetLocalOption(key: kOptionHideLocalCursor) == 'Y';
 
   bool get showCursorPaint =>
       !gFFI.ffiModel.isPeerAndroid &&
       !gFFI.canvasModel.cursorEmbedded &&
-      !gFFI.inputModel.relativeMouseMode.value;
+      !gFFI.inputModel.relativeMouseMode.value &&
+      !_hideLocalCursor;
+
+  void _sendOrientationResolution(Orientation orientation) {
+    final pi = gFFI.ffiModel.pi;
+    final display =
+        pi.tryGetDisplayIfNotAllDisplay(display: pi.currentDisplay);
+    if (display == null) return;
+
+    int newWidth, newHeight;
+    if (orientation == Orientation.landscape) {
+      newWidth = max(display.width, display.height);
+      newHeight = min(display.width, display.height);
+    } else {
+      newWidth = min(display.width, display.height);
+      newHeight = max(display.width, display.height);
+    }
+
+    if (newWidth != display.width || newHeight != display.height) {
+      bind.sessionChangeResolution(
+        sessionId: gFFI.sessionId,
+        display: pi.currentDisplay,
+        width: newWidth,
+        height: newHeight,
+      );
+    }
+  }
 
   Widget getBodyForMobile() {
     final keyboardIsVisible = keyboardVisibilityController.isVisible;
