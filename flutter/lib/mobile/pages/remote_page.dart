@@ -665,14 +665,20 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     final key = gFFI.ffiModel.touchMode
         ? kOptionHideLocalCursorTouch
         : kOptionHideLocalCursorMouse;
-    return bind.mainGetLocalOption(key: key) == 'Y';
+    final val = bind.mainGetLocalOption(key: key);
+    // In touch mode, default to hidden (true) when not explicitly set
+    if (val.isEmpty && gFFI.ffiModel.touchMode) return true;
+    return val == 'Y';
   }
 
   bool get _hideRemoteCursor {
     final key = gFFI.ffiModel.touchMode
         ? kOptionHideRemoteCursorTouch
         : kOptionHideRemoteCursorMouse;
-    return bind.mainGetLocalOption(key: key) == 'Y';
+    final val = bind.mainGetLocalOption(key: key);
+    // In touch mode, default to hidden (true) when not explicitly set
+    if (val.isEmpty && gFFI.ffiModel.touchMode) return true;
+    return val == 'Y';
   }
 
   bool get showCursorPaint =>
@@ -1013,8 +1019,14 @@ class KeyHelpTools extends StatefulWidget {
   final bool showGestureHelp;
   final bool showBar;
 
+  /// Whether the panel should appear when the keyboard opens.
+  /// Reads the user preference; defaults to false (panel hidden).
+  static bool get _keyHelpPanelEnabled =>
+      bind.mainGetLocalOption(key: kOptionShowKeyHelpPanel) == 'Y';
+
   /// need to show by external request, etc [keyboardIsVisible] or [changeTouchMode]
-  bool get requestShow => keyboardIsVisible || showGestureHelp;
+  bool get requestShow =>
+      (keyboardIsVisible && _keyHelpPanelEnabled) || showGestureHelp;
 
   KeyHelpTools(
       {required this.keyboardIsVisible,
