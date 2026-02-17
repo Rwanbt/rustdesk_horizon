@@ -1,4 +1,4 @@
-name: CI
+name: Fulldesk CI
 
 env:
 #   MIN_SUPPORTED_RUST_VERSION: "1.46.0"
@@ -16,6 +16,7 @@ on:
   push:
     branches:
       - master
+      - Dev
     paths-ignore:
       - ".github/**"
       - "docs/**"

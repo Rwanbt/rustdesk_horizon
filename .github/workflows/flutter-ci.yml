@@ -1,4 +1,4 @@
-name: Full Flutter CI
+name: Fulldesk Flutter CI
 
 on:
   workflow_dispatch:
@@ -9,6 +9,7 @@ on:
   push:
     branches:
       - master
+      - Dev
     paths-ignore:
       - ".github/**"
       - "docs/**"
