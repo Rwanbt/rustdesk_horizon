@@ -1045,6 +1045,10 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
   @override
   void didUpdateWidget(covariant KeyHelpTools oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // Auto-unpin when keyboard closes so the toolbar hides with it
+    if (oldWidget.keyboardIsVisible && !widget.keyboardIsVisible) {
+      _pin = false;
+    }
     // When bottom bar hides, show handle briefly then start auto-hide timer
     if (!widget.showBar && oldWidget.showBar) {
       _showHandle = true;
