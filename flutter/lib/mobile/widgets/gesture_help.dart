@@ -109,36 +109,33 @@ class _GestureHelpState extends State<GestureHelp> {
     );
   }
 
+  /// Build a checkbox tied to a local option.
+  /// [defaultOn]: when true, an empty stored value means checked (default on).
   Widget _buildOptionCheckbox({required String key, required String label,
-      bool notifyParent = false}) {
+      bool notifyParent = false, bool defaultOn = false}) {
+    final raw = bind.mainGetLocalOption(key: key);
+    final bool checked = raw.isEmpty ? defaultOn : raw == 'Y';
+    void toggle() async {
+      final newChecked = !checked;
+      await bind.mainSetLocalOption(
+        key: key,
+        value: newChecked ? 'Y' : 'N',
+      );
+      setState(() {});
+      if (notifyParent) widget.onChanged?.call();
+    }
     return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Checkbox(
             visualDensity: VisualDensity.compact,
             materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            value: bind.mainGetLocalOption(key: key) == 'Y',
-            onChanged: (value) async {
-              if (value == null) return;
-              await bind.mainSetLocalOption(
-                key: key,
-                value: value ? 'Y' : '',
-              );
-              setState(() {});
-              if (notifyParent) widget.onChanged?.call();
-            },
+            value: checked,
+            onChanged: (_) => toggle(),
           ),
           Flexible(
             child: InkWell(
-              onTap: () async {
-                final current = bind.mainGetLocalOption(key: key) == 'Y';
-                await bind.mainSetLocalOption(
-                  key: key,
-                  value: !current ? 'Y' : '',
-                );
-                setState(() {});
-                if (notifyParent) widget.onChanged?.call();
-              },
+              onTap: toggle,
               child: Text(translate(label),
                   overflow: TextOverflow.ellipsis, maxLines: 1),
             ),
@@ -246,29 +243,43 @@ class _GestureHelpState extends State<GestureHelp> {
                       Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Checkbox(
-                              visualDensity: VisualDensity.compact,
-                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                              value: _virtualMouseMode.showVirtualMouse,
-                              onChanged: (value) async {
-                                if (value == null) return;
-                                await _virtualMouseMode.toggleVirtualMouse();
-                                _exitRelativeMouseModeIf(
-                                    !_virtualMouseMode.showVirtualMouse);
-                                setState(() {});
-                              },
+                            Flexible(
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Checkbox(
+                                    visualDensity: VisualDensity.compact,
+                                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                    value: _virtualMouseMode.showVirtualMouse,
+                                    onChanged: (value) async {
+                                      if (value == null) return;
+                                      await _virtualMouseMode.toggleVirtualMouse();
+                                      _exitRelativeMouseModeIf(
+                                          !_virtualMouseMode.showVirtualMouse);
+                                      setState(() {});
+                                    },
+                                  ),
+                                  Flexible(
+                                    child: InkWell(
+                                      onTap: () async {
+                                        await _virtualMouseMode.toggleVirtualMouse();
+                                        _exitRelativeMouseModeIf(
+                                            !_virtualMouseMode.showVirtualMouse);
+                                        setState(() {});
+                                      },
+                                      child: Text(translate('Show virtual mouse'),
+                                          overflow: TextOverflow.ellipsis,
+                                          maxLines: 1),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                             Flexible(
-                              child: InkWell(
-                                onTap: () async {
-                                  await _virtualMouseMode.toggleVirtualMouse();
-                                  _exitRelativeMouseModeIf(
-                                      !_virtualMouseMode.showVirtualMouse);
-                                  setState(() {});
-                                },
-                                child: Text(translate('Show virtual mouse'),
-                                    overflow: TextOverflow.ellipsis,
-                                    maxLines: 1),
+                              child: _buildOptionCheckbox(
+                                key: kOptionShowKeyHelpPanel,
+                                label: 'Show keyboard shortcuts panel',
+                                notifyParent: true,
                               ),
                             ),
                           ],
@@ -407,6 +418,7 @@ class _GestureHelpState extends State<GestureHelp> {
                                   : kOptionHideLocalCursorMouse,
                               label: 'Hide local cursor',
                               notifyParent: true,
+                              defaultOn: _touchMode,
                             ),
                           ),
                           Flexible(
@@ -416,6 +428,7 @@ class _GestureHelpState extends State<GestureHelp> {
                                   : kOptionHideRemoteCursorMouse,
                               label: 'Hide distant cursor',
                               notifyParent: true,
+                              defaultOn: _touchMode,
                             ),
                           ),
                         ],

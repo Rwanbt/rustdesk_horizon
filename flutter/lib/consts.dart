@@ -175,6 +175,7 @@ const String kOptionAccentColor = "accent-color";
 const String kOptionSoberTheme = "sober-theme";
 const String kOptionAutoOpenKeyboard = "auto-open-keyboard";
 const String kOptionAutoRotation = "auto-rotation";
+const String kOptionShowKeyHelpPanel = "show-key-help-panel";
 const String kOptionAllowAskForNoteAtEndOfConnection = "allow-ask-for-note";
 const String kOptionEnableShowTerminalExtraKeys = "enable-show-terminal-extra-keys";
 

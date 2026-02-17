@@ -1334,6 +1334,9 @@ class FfiModel with ChangeNotifier {
       final optLocal = bind.mainGetLocalOption(key: kOptionTouchMode);
       if (optLocal != '') {
         _touchMode = optLocal == 'Y';
+      } else if (isMobile) {
+        // Default to touch mode on mobile devices
+        _touchMode = true;
       } else {
         final optSession = await bind.sessionGetOption(
             sessionId: sessionId, arg: kOptionTouchMode);

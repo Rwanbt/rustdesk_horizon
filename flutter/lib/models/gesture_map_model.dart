@@ -87,7 +87,7 @@ class GestureMapModel {
     GestureInput.longPress: GestureAction.rightClick,
     GestureInput.pan1: GestureAction.scroll,
     GestureInput.pan2: GestureAction.panCanvas,
-    GestureInput.pan3: GestureAction.scroll,
+    GestureInput.pan3: GestureAction.openKeyboard,
     GestureInput.pinch: GestureAction.zoomCanvas,
     GestureInput.holdDrag: GestureAction.textSelection,
   };

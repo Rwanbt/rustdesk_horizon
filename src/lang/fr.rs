@@ -718,6 +718,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Small", "Petite"),
         ("Large", "Grande"),
         ("Show virtual joystick", "Afficher le joystick virtuel"),
+        ("Show keyboard shortcuts panel", "Panneau de raccourcis clavier"),
         ("Edit note", "Modifier la note"),
         ("Alias", "Alias"),
         ("ScrollEdge", "Défilement sur les bords"),
