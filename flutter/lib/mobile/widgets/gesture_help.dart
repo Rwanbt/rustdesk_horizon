@@ -45,12 +45,14 @@ class GestureHelp extends StatefulWidget {
       required this.touchMode,
       required this.onTouchModeChange,
       required this.virtualMouseMode,
-      this.inputModel})
+      this.inputModel,
+      this.onChanged})
       : super(key: key);
   final bool touchMode;
   final OnTouchModeChange onTouchModeChange;
   final VirtualMouseMode virtualMouseMode;
   final InputModel? inputModel;
+  final VoidCallback? onChanged;
 
   @override
   State<StatefulWidget> createState() =>
@@ -107,13 +109,14 @@ class _GestureHelpState extends State<GestureHelp> {
     );
   }
 
-  Widget _buildCursorCheckbox({required String key, required String label}) {
-    return Transform.translate(
-      offset: const Offset(-10.0, 0.0),
-      child: Row(
+  Widget _buildOptionCheckbox({required String key, required String label,
+      bool notifyParent = false}) {
+    return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Checkbox(
+            visualDensity: VisualDensity.compact,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
             value: bind.mainGetLocalOption(key: key) == 'Y',
             onChanged: (value) async {
               if (value == null) return;
@@ -122,6 +125,7 @@ class _GestureHelpState extends State<GestureHelp> {
                 value: value ? 'Y' : '',
               );
               setState(() {});
+              if (notifyParent) widget.onChanged?.call();
             },
           ),
           Flexible(
@@ -133,14 +137,14 @@ class _GestureHelpState extends State<GestureHelp> {
                   value: !current ? 'Y' : '',
                 );
                 setState(() {});
+                if (notifyParent) widget.onChanged?.call();
               },
               child: Text(translate(label),
                   overflow: TextOverflow.ellipsis, maxLines: 1),
             ),
           ),
         ],
-      ),
-    );
+      );
   }
 
   List<Widget> _buildGestureCards(double width) {
@@ -201,46 +205,50 @@ class _GestureHelpState extends State<GestureHelp> {
     }
     return Center(
         child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12.0),
+            padding: const EdgeInsets.symmetric(vertical: 12.0, horizontal: 4.0),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: <Widget>[
-                Center(
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: size.width - 8),
                   child: Column(
                     children: [
-                      ToggleSwitch(
-                        initialLabelIndex: _selectedIndex,
-                        activeFgColor: Colors.white,
-                        inactiveFgColor: Colors.white60,
-                        activeBgColor: [MyTheme.accent],
-                        inactiveBgColor: Theme.of(context).hintColor,
-                        totalSwitches: 2,
-                        minWidth: 150,
-                        fontSize: 15,
-                        iconSize: 18,
-                        labels: [
-                          translate("Mouse mode"),
-                          translate("Touch mode")
-                        ],
-                        icons: [Icons.mouse, Icons.touch_app],
-                        onToggle: (index) {
-                          setState(() {
-                            if (_selectedIndex != index) {
-                              _selectedIndex = index ?? 0;
-                              _touchMode = index == 0 ? false : true;
-                              widget.onTouchModeChange(_touchMode);
-                              _exitRelativeMouseModeIf(_touchMode);
-                            }
-                          });
-                        },
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: ToggleSwitch(
+                          initialLabelIndex: _selectedIndex,
+                          activeFgColor: Colors.white,
+                          inactiveFgColor: Colors.white60,
+                          activeBgColor: [MyTheme.accent],
+                          inactiveBgColor: Theme.of(context).hintColor,
+                          totalSwitches: 2,
+                          minWidth: 150,
+                          fontSize: 15,
+                          iconSize: 18,
+                          labels: [
+                            translate("Mouse mode"),
+                            translate("Touch mode")
+                          ],
+                          icons: [Icons.mouse, Icons.touch_app],
+                          onToggle: (index) {
+                            setState(() {
+                              if (_selectedIndex != index) {
+                                _selectedIndex = index ?? 0;
+                                _touchMode = index == 0 ? false : true;
+                                widget.onTouchModeChange(_touchMode);
+                                _exitRelativeMouseModeIf(_touchMode);
+                              }
+                            });
+                          },
+                        ),
                       ),
                       const SizedBox(height: 8),
-                      Transform.translate(
-                        offset: const Offset(-10.0, 0.0),
-                        child: Row(
+                      Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Checkbox(
+                              visualDensity: VisualDensity.compact,
+                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                               value: _virtualMouseMode.showVirtualMouse,
                               onChanged: (value) async {
                                 if (value == null) return;
@@ -264,7 +272,6 @@ class _GestureHelpState extends State<GestureHelp> {
                               ),
                             ),
                           ],
-                        ),
                       ),
                       if (_touchMode && _virtualMouseMode.showVirtualMouse)
                         Padding(
@@ -316,14 +323,14 @@ class _GestureHelpState extends State<GestureHelp> {
                           ),
                         ),
                       if (!_touchMode && _virtualMouseMode.showVirtualMouse)
-                        Transform.translate(
-                          offset: const Offset(-10.0, -12.0),
-                          child: Padding(
+                        Padding(
                               padding: const EdgeInsets.only(left: 24.0),
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Checkbox(
+                                    visualDensity: VisualDensity.compact,
+                                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                     value:
                                         _virtualMouseMode.showVirtualJoystick,
                                     onChanged: (value) async {
@@ -354,20 +361,19 @@ class _GestureHelpState extends State<GestureHelp> {
                                   ),
                                 ],
                               )),
-                        ),
                       // Relative mouse mode option
                       if (!_touchMode &&
                           _virtualMouseMode.showVirtualMouse &&
                           _virtualMouseMode.showVirtualJoystick &&
                           widget.inputModel != null)
-                        Obx(() => Transform.translate(
-                              offset: const Offset(-10.0, -24.0),
-                              child: Padding(
+                        Obx(() => Padding(
                                   padding: const EdgeInsets.only(left: 48.0),
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
                                       Checkbox(
+                                        visualDensity: VisualDensity.compact,
+                                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                         value: widget.inputModel!
                                             .relativeMouseMode.value,
                                         onChanged: (value) {
@@ -390,24 +396,26 @@ class _GestureHelpState extends State<GestureHelp> {
                                       ),
                                     ],
                                   )),
-                            )),
+                            ),
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           Flexible(
-                            child: _buildCursorCheckbox(
+                            child: _buildOptionCheckbox(
                               key: _touchMode
                                   ? kOptionHideLocalCursorTouch
                                   : kOptionHideLocalCursorMouse,
                               label: 'Hide local cursor',
+                              notifyParent: true,
                             ),
                           ),
                           Flexible(
-                            child: _buildCursorCheckbox(
+                            child: _buildOptionCheckbox(
                               key: _touchMode
                                   ? kOptionHideRemoteCursorTouch
                                   : kOptionHideRemoteCursorMouse,
                               label: 'Hide distant cursor',
+                              notifyParent: true,
                             ),
                           ),
                         ],

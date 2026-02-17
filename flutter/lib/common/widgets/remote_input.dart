@@ -65,6 +65,7 @@ class RawTouchGestureDetectorRegion extends StatefulWidget {
   final FFI ffi;
   final bool isCamera;
   final VoidCallback? onInteraction;
+  final VoidCallback? onOpenKeyboard;
   late final InputModel inputModel = ffi.inputModel;
   late final FfiModel ffiModel = ffi.ffiModel;
 
@@ -73,6 +74,7 @@ class RawTouchGestureDetectorRegion extends StatefulWidget {
     required this.ffi,
     this.isCamera = false,
     this.onInteraction,
+    this.onOpenKeyboard,
   });
 
   @override
@@ -98,6 +100,15 @@ class _RawTouchGestureDetectorRegionState
   double _scale = 1;
   GestureAction? _activeOneFingerPanAction;
   double _oneFingerScrollIntegral = 0;
+  GestureAction? _activeHoldDragAction;
+  double _holdDragScrollIntegral = 0;
+  bool _threeFingerOneShotFired = false;
+  // Two-finger intent locking with cumulative detection
+  // null = undetermined, true = pinch/zoom, false = pan2 action
+  bool? _twoFingerIsPinch;
+  bool _twoFingerOneShotFired = false;
+  double _twoFingerCumulativeScale = 0; // accumulated |scale - 1.0|
+  double _twoFingerCumulativeTranslation = 0; // accumulated focal point distance
 
   // Workaround tap down event when two fingers are used to scale(mobile)
   TapDownDetails? _lastTapDownDetails;
@@ -121,6 +132,25 @@ class _RawTouchGestureDetectorRegionState
   InputModel get inputModel => widget.inputModel;
   bool get handleTouch => (isDesktop || isWebDesktop) || ffiModel.touchMode;
   SessionID get sessionId => ffi.sessionId;
+
+  /// Whether an action is a one-shot action (fires once, not continuously).
+  bool _isOneShotAction(GestureAction action) {
+    switch (action) {
+      case GestureAction.leftClick:
+      case GestureAction.rightClick:
+      case GestureAction.doubleClick:
+      case GestureAction.middleClick:
+      case GestureAction.copy:
+      case GestureAction.paste:
+      case GestureAction.selectAll:
+      case GestureAction.undo:
+      case GestureAction.redo:
+      case GestureAction.openKeyboard:
+        return true;
+      default:
+        return false;
+    }
+  }
 
   /// Dispatch a tap-type gesture action (used by configurable gesture mapping).
   Future<void> _dispatchTapAction(GestureAction action) async {
@@ -162,6 +192,9 @@ class _RawTouchGestureDetectorRegionState
         inputModel.ctrl = true;
         inputModel.inputKey('VK_Y');
         inputModel.ctrl = false;
+        break;
+      case GestureAction.openKeyboard:
+        widget.onOpenKeyboard?.call();
         break;
       default:
         break;
@@ -396,8 +429,27 @@ class _RawTouchGestureDetectorRegionState
     if (isNotTouchBasedDevice()) {
       return;
     }
-    if (!handleTouch) {
+    if (handleTouch) {
+      _activeHoldDragAction = GestureMapModel.getAction(true, GestureInput.holdDrag);
+      _holdDragScrollIntegral = 0;
+
+      // One-shot actions: dispatch immediately, no drag
+      if (_isOneShotAction(_activeHoldDragAction!)) {
+        await _dispatchTapAction(_activeHoldDragAction!);
+        _activeHoldDragAction = null;
+        return;
+      }
+
+      // Continuous actions that need mouse down
+      if (_activeHoldDragAction == GestureAction.textSelection ||
+          _activeHoldDragAction == GestureAction.drag) {
+        await ffi.cursorModel.move(
+            _lastPosOfDoubleTapDown.dx, _lastPosOfDoubleTapDown.dy);
+        await inputModel.sendMouse('down', MouseButtons.left);
+      }
+    } else {
       if (isSpecialHoldDragActive) return;
+      _activeHoldDragAction = GestureAction.drag;
       await inputModel.sendMouse('down', MouseButtons.left);
     }
   }
@@ -406,7 +458,32 @@ class _RawTouchGestureDetectorRegionState
     if (isNotTouchBasedDevice()) {
       return;
     }
-    if (!handleTouch) {
+    if (_activeHoldDragAction == null) return;
+    if (handleTouch) {
+      switch (_activeHoldDragAction) {
+        case GestureAction.textSelection:
+        case GestureAction.drag:
+        case GestureAction.moveCursor:
+          await ffi.cursorModel.updatePan(d.delta, d.localPosition, handleTouch);
+          break;
+        case GestureAction.scroll:
+          _holdDragScrollIntegral += d.delta.dy / 4;
+          if (_holdDragScrollIntegral > 1) {
+            inputModel.scroll(1);
+            _holdDragScrollIntegral = 0;
+          } else if (_holdDragScrollIntegral < -1) {
+            inputModel.scroll(-1);
+            _holdDragScrollIntegral = 0;
+          }
+          break;
+        case GestureAction.panCanvas:
+          ffi.canvasModel.panX(d.delta.dx);
+          ffi.canvasModel.panY(d.delta.dy);
+          break;
+        default:
+          break;
+      }
+    } else {
       if (isSpecialHoldDragActive) return;
       await ffi.cursorModel.updatePan(d.delta, d.localPosition, handleTouch);
     }
@@ -416,7 +493,12 @@ class _RawTouchGestureDetectorRegionState
     if (isNotTouchBasedDevice()) {
       return;
     }
-    if (!handleTouch) {
+    final action = _activeHoldDragAction;
+    _activeHoldDragAction = null;
+    if (action == GestureAction.textSelection ||
+        action == GestureAction.drag) {
+      await inputModel.sendMouse('up', MouseButtons.left);
+    } else if (!handleTouch) {
       await inputModel.sendMouse('up', MouseButtons.left);
     }
   }
@@ -442,18 +524,23 @@ class _RawTouchGestureDetectorRegionState
       }
 
       _touchModePanStarted = true;
-      _activeOneFingerPanAction =
-          GestureMapModel.getAction(true, GestureInput.pan1);
       _oneFingerScrollIntegral = 0;
       if (isDesktop || isWebDesktop) {
         ffi.cursorModel.trySetRemoteWindowCoords();
       }
 
+      _activeOneFingerPanAction =
+          GestureMapModel.getAction(true, GestureInput.pan1);
+
+      // One-shot actions: dispatch immediately, don't start pan
+      if (_isOneShotAction(_activeOneFingerPanAction!)) {
+        await _dispatchTapAction(_activeOneFingerPanAction!);
+        _activeOneFingerPanAction = null;
+        _touchModePanStarted = false;
+        return;
+      }
+
       // Workaround for the issue that the first pan event is sent a long time after the start event.
-      // If the time interval between the start event and the first pan event is less than 500ms,
-      // we consider to use the long press position as the start position.
-      //
-      // TODO: We should find a better way to send the first pan event as soon as possible.
       if (DateTime.now().millisecondsSinceEpoch - _cacheLongPressPositionTs <
           500) {
         await ffi.cursorModel
@@ -557,9 +644,22 @@ class _RawTouchGestureDetectorRegionState
     if (isNotTouchBasedDevice()) {
       return;
     }
+    _twoFingerIsPinch = null; // Reset intent for new gesture
+    _twoFingerOneShotFired = false;
+    _mouseScrollIntegral = 0;
+    _twoFingerCumulativeScale = 0;
+    _twoFingerCumulativeTranslation = 0;
     if (isSpecialHoldDragActive) {
       // Initialize the last focal point to calculate deltas manually.
       _lastSpecialHoldDragFocalPoint = d.focalPoint;
+    } else if (isMobile) {
+      // Dispatch one-shot pan2 actions at gesture start
+      final pan2Action = GestureMapModel.getAction(
+          ffiModel.touchMode, GestureInput.pan2);
+      if (_isOneShotAction(pan2Action)) {
+        _dispatchTapAction(pan2Action);
+        _twoFingerOneShotFired = true;
+      }
     }
   }
 
@@ -590,21 +690,54 @@ class _RawTouchGestureDetectorRegionState
                     .toJson()));
       }
     } else {
-      // mobile — threshold-based intent detection for pinch vs pan2
+      // mobile — cumulative intent detection for pinch vs pan2
+      // Inspired by iOS/Android gesture recognizers: accumulate both
+      // scale change and translation, first to reach threshold wins.
+      if (_twoFingerOneShotFired) {
+        _scale = d.scale;
+        return;
+      }
+
       final pan2Action = GestureMapModel.getAction(
           ffiModel.touchMode, GestureInput.pan2);
-      final scaleChange = (d.scale - 1.0).abs();
-      const kPinchThreshold = 0.02;
+      final pinchAction = GestureMapModel.getAction(
+          ffiModel.touchMode, GestureInput.pinch);
 
-      // Pinch-to-zoom always active regardless of pan2 config
-      if (scaleChange > kPinchThreshold) {
-        ffi.canvasModel.updateScale(d.scale / _scale, d.focalPoint);
+      // Accumulate evidence for both gestures.
+      // Deadzone: ignore scale jitter < 0.003 per frame (sensor noise).
+      final scaleDelta = (d.scale - _scale).abs();
+      if (scaleDelta > 0.003) {
+        _twoFingerCumulativeScale += scaleDelta;
       }
-      _scale = d.scale; // Always track to avoid jumps
+      _twoFingerCumulativeTranslation += d.focalPointDelta.distance;
 
-      // Pan2 behavior (only when not actively pinching)
-      if (pan2Action == GestureAction.scroll) {
-        if (scaleChange <= kPinchThreshold) {
+      // Thresholds for intent determination.
+      // Scale threshold is intentionally high: requires real pinch movement.
+      // Translation threshold is low: parallel finger movement wins easily.
+      const kScaleThreshold = 0.12;
+      const kTranslationThreshold = 10.0;
+
+      if (_twoFingerIsPinch == null) {
+        // Race: first signal to reach its threshold determines intent.
+        // Translation is checked first (bias towards scroll/pan).
+        if (_twoFingerCumulativeTranslation >= kTranslationThreshold) {
+          _twoFingerIsPinch = false;
+        } else if (_twoFingerCumulativeScale >= kScaleThreshold) {
+          _twoFingerIsPinch = true;
+        }
+        // Still undetermined — track scale but don't act yet
+        _scale = d.scale;
+        return;
+      }
+
+      if (_twoFingerIsPinch!) {
+        // Pinch-to-zoom
+        if (pinchAction == GestureAction.zoomCanvas) {
+          ffi.canvasModel.updateScale(d.scale / _scale, d.focalPoint);
+        }
+      } else {
+        // Pan2 action
+        if (pan2Action == GestureAction.scroll) {
           _mouseScrollIntegral += d.focalPointDelta.dy / 4;
           if (_mouseScrollIntegral > 1) {
             inputModel.scroll(1);
@@ -613,12 +746,12 @@ class _RawTouchGestureDetectorRegionState
             inputModel.scroll(-1);
             _mouseScrollIntegral = 0;
           }
+        } else if (pan2Action == GestureAction.panCanvas) {
+          ffi.canvasModel.panX(d.focalPointDelta.dx);
+          ffi.canvasModel.panY(d.focalPointDelta.dy);
         }
-      } else {
-        // Default: canvas pan
-        ffi.canvasModel.panX(d.focalPointDelta.dx);
-        ffi.canvasModel.panY(d.focalPointDelta.dy);
       }
+      _scale = d.scale;
     }
   }
 
@@ -626,6 +759,7 @@ class _RawTouchGestureDetectorRegionState
     if (isNotTouchBasedDevice()) {
       return;
     }
+    _twoFingerIsPinch = null;
     if ((isDesktop || isWebDesktop)) {
       if (widget.isCamera) return;
       await bind.sessionSendPointer(
@@ -635,18 +769,33 @@ class _RawTouchGestureDetectorRegionState
     } else {
       // mobile
       _scale = 1;
-      // No idea why we need to set the view style to "" here.
-      // bind.sessionSetViewStyle(sessionId: sessionId, value: "");
     }
     if (!isSpecialHoldDragActive) {
       await inputModel.sendMouse('up', MouseButtons.left);
     }
   }
 
-  get onHoldDragCancel => null;
+  get onHoldDragCancel {
+    _activeHoldDragAction = null;
+    return null;
+  }
+
+  get onThreeFingerVerticalDragStart => ffi.ffiModel.isPeerAndroid
+      ? null
+      : (DragStartDetails d) {
+          _threeFingerOneShotFired = false;
+          final action = GestureMapModel.getAction(
+              ffiModel.touchMode, GestureInput.pan3);
+          if (_isOneShotAction(action)) {
+            _dispatchTapAction(action);
+            _threeFingerOneShotFired = true;
+          }
+        };
+
   get onThreeFingerVerticalDragUpdate => ffi.ffiModel.isPeerAndroid
       ? null
       : (d) {
+          if (_threeFingerOneShotFired) return;
           final action = GestureMapModel.getAction(
               ffiModel.touchMode, GestureInput.pan3);
           if (action == GestureAction.scroll) {
@@ -719,6 +868,7 @@ class _RawTouchGestureDetectorRegionState
           ..onTwoFingerScaleStart = onTwoFingerScaleStart
           ..onTwoFingerScaleUpdate = onTwoFingerScaleUpdate
           ..onTwoFingerScaleEnd = onTwoFingerScaleEnd
+          ..onThreeFingerVerticalDragStart = onThreeFingerVerticalDragStart
           ..onThreeFingerVerticalDragUpdate = onThreeFingerVerticalDragUpdate;
       }),
     };

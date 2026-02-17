@@ -601,6 +601,10 @@ static mut VIRTUAL_INPUT_STATE: Option<VirtualInputState> = None;
 // Falls back to IPC to the --service process if direct access fails.
 #[cfg(target_os = "linux")]
 pub async fn setup_uinput(minx: i32, maxx: i32, miny: i32, maxy: i32) -> ResultType<()> {
+    // Sync XWayland layout with system layout (prevents AZERTY/QWERTZ mismatch
+    // that can occur when other software resets XWayland's keymap).
+    super::uinput::service::sync_xwayland_layout();
+
     // Try direct UInput first: write to /dev/uinput without IPC.
     // This works when user has rw access via ACL or input group.
     match try_setup_direct_uinput(minx, maxx, miny, maxy) {

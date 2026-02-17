@@ -466,7 +466,7 @@ pub mod client {
 pub mod service {
     use super::*;
     use hbb_common::lazy_static;
-    use std::{collections::HashMap, sync::Mutex};
+    use std::{collections::HashMap, sync::Mutex, sync::OnceLock};
 
     lazy_static::lazy_static! {
     static ref KEY_MAP: HashMap<enigo::Key, evdev::Key> = HashMap::from(
@@ -652,6 +652,218 @@ pub mod service {
         static ref RESOLUTION: Mutex<((i32, i32), (i32, i32))> = Mutex::new(((0, 0), (0, 0)));
     }
 
+    /// Cached dynamic layout map built from the system's XKB keymap.
+    /// `None` means the system uses US QWERTY or detection failed (fall back to KEY_MAP_LAYOUT).
+    static DYNAMIC_LAYOUT_MAP: OnceLock<Option<HashMap<char, (evdev::Key, bool)>>> = OnceLock::new();
+
+    /// Convert an XKB keysym name to an ASCII char.
+    /// Returns None for dead keys, non-ASCII symbols, or unknown keysyms.
+    fn xkb_sym_to_char(sym: &str) -> Option<char> {
+        // Single ASCII character keysyms (e.g., "a", "A", "1")
+        if sym.len() == 1 {
+            let ch = sym.chars().next()?;
+            if ch.is_ascii() {
+                return Some(ch);
+            }
+        }
+        // Named keysyms → ASCII char
+        match sym {
+            "space" => Some(' '),
+            "exclam" => Some('!'),
+            "at" => Some('@'),
+            "numbersign" => Some('#'),
+            "dollar" => Some('$'),
+            "percent" => Some('%'),
+            "asciicircum" => Some('^'),
+            "ampersand" => Some('&'),
+            "asterisk" => Some('*'),
+            "parenleft" => Some('('),
+            "parenright" => Some(')'),
+            "minus" => Some('-'),
+            "underscore" => Some('_'),
+            "equal" => Some('='),
+            "plus" => Some('+'),
+            "bracketleft" => Some('['),
+            "bracketright" => Some(']'),
+            "braceleft" => Some('{'),
+            "braceright" => Some('}'),
+            "backslash" => Some('\\'),
+            "bar" => Some('|'),
+            "semicolon" => Some(';'),
+            "colon" => Some(':'),
+            "apostrophe" => Some('\''),
+            "quotedbl" => Some('"'),
+            "grave" => Some('`'),
+            "asciitilde" => Some('~'),
+            "comma" => Some(','),
+            "period" => Some('.'),
+            "slash" => Some('/'),
+            "less" => Some('<'),
+            "greater" => Some('>'),
+            "question" => Some('?'),
+            _ => None, // dead keys, accented chars, etc. — skip
+        }
+    }
+
+    /// Sync the XWayland keyboard layout with the system layout.
+    /// This prevents mismatches that can occur when other software
+    /// (e.g., Docker Desktop) resets the XWayland keymap.
+    pub fn sync_xwayland_layout() {
+        let localectl = match std::process::Command::new("localectl")
+            .arg("status")
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                log::warn!("Failed to run localectl: {}", e);
+                return;
+            }
+        };
+        let out = String::from_utf8_lossy(&localectl.stdout);
+        let mut layout = String::new();
+        let mut variant = String::new();
+        for line in out.lines() {
+            let line = line.trim();
+            if line.starts_with("X11 Layout:") {
+                layout = line.split(':').nth(1).unwrap_or("").trim().to_string();
+            } else if line.starts_with("X11 Variant:") {
+                variant = line.split(':').nth(1).unwrap_or("").trim().to_string();
+            }
+        }
+        if layout.is_empty() {
+            return;
+        }
+        let mut args = vec!["-layout".to_string(), layout.clone()];
+        if !variant.is_empty() {
+            args.push("-variant".to_string());
+            args.push(variant.clone());
+        }
+        match std::process::Command::new("setxkbmap").args(&args).output() {
+            Ok(_) => log::info!(
+                "Synced XWayland layout to {} {}",
+                layout,
+                variant
+            ),
+            Err(e) => log::warn!("Failed to run setxkbmap: {}", e),
+        }
+    }
+
+    /// Build a dynamic char→(evdev::Key, is_shift) map by parsing the system's
+    /// XKB keymap via `xkbcomp`. This correctly handles non-US layouts (AZERTY,
+    /// QWERTZ, etc.) where the character positions differ from QWERTY.
+    fn build_dynamic_layout_map() -> Option<HashMap<char, (evdev::Key, bool)>> {
+        // XKB key name → evdev keycode mapping (standard for evdev-based systems)
+        let xkb_to_evdev: &[(&str, u16)] = &[
+            // Grave / tilde
+            ("TLDE", 41),
+            // Number row
+            ("AE01", 2), ("AE02", 3), ("AE03", 4), ("AE04", 5), ("AE05", 6),
+            ("AE06", 7), ("AE07", 8), ("AE08", 9), ("AE09", 10), ("AE10", 11),
+            ("AE11", 12), ("AE12", 13),
+            // Top alpha row (QWERTY: Q W E R T Y U I O P [ ])
+            ("AD01", 16), ("AD02", 17), ("AD03", 18), ("AD04", 19), ("AD05", 20),
+            ("AD06", 21), ("AD07", 22), ("AD08", 23), ("AD09", 24), ("AD10", 25),
+            ("AD11", 26), ("AD12", 27),
+            // Home alpha row (QWERTY: A S D F G H J K L ; ')
+            ("AC01", 30), ("AC02", 31), ("AC03", 32), ("AC04", 33), ("AC05", 34),
+            ("AC06", 35), ("AC07", 36), ("AC08", 37), ("AC09", 38), ("AC10", 39),
+            ("AC11", 40),
+            // Bottom alpha row (QWERTY: Z X C V B N M , . /)
+            ("AB01", 44), ("AB02", 45), ("AB03", 46), ("AB04", 47), ("AB05", 48),
+            ("AB06", 49), ("AB07", 50), ("AB08", 51), ("AB09", 52), ("AB10", 53),
+            // Extra keys
+            ("BKSL", 43), ("LSGT", 86),
+        ];
+        let xkb_map: HashMap<&str, u16> = xkb_to_evdev.iter().copied().collect();
+
+        // Check system layout
+        let localectl = std::process::Command::new("localectl")
+            .arg("status")
+            .output()
+            .ok()?;
+        let out = String::from_utf8_lossy(&localectl.stdout);
+        let mut layout = String::new();
+        for line in out.lines() {
+            let line = line.trim();
+            if line.starts_with("X11 Layout:") {
+                layout = line.split(':').nth(1).unwrap_or("").trim().to_string();
+            }
+        }
+
+        if layout.is_empty() || layout == "us" {
+            log::info!("System layout is US QWERTY, using static KEY_MAP_LAYOUT");
+            return None;
+        }
+
+        log::info!("Non-US layout detected ({}), building dynamic keymap", layout);
+
+        // Get the compiled keymap from xkbcomp
+        let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("xkbcomp {} - 2>/dev/null", display))
+            .output()
+            .ok()?;
+        let xkb_text = String::from_utf8_lossy(&output.stdout);
+
+        if xkb_text.is_empty() {
+            log::warn!("xkbcomp returned empty output, falling back to static map");
+            return None;
+        }
+
+        let mut result: HashMap<char, (evdev::Key, bool)> = HashMap::new();
+
+        // Parse each key block:
+        //   key <NAME> { ... symbols[Group1]= [ sym0, Sym1, sym2, sym3 ] ... };
+        // sym0 = unshifted, sym1 = shifted
+        for (key_name, evdev_code) in xkb_to_evdev {
+            let pattern = format!("key <{}>", key_name);
+            if let Some(start) = xkb_text.find(&pattern) {
+                let block = &xkb_text[start..];
+                if let Some(end) = block.find("};") {
+                    let block = &block[..end];
+                    if let Some(sym_start) = block.find("symbols[Group1]= [") {
+                        let after = &block[sym_start + "symbols[Group1]= [".len()..];
+                        if let Some(sym_end) = after.find(']') {
+                            let syms: Vec<&str> = after[..sym_end]
+                                .split(',')
+                                .map(|s| s.trim())
+                                .collect();
+
+                            let evdev_key = evdev::Key::new(*evdev_code);
+
+                            // Level 0: unshifted
+                            if let Some(sym0) = syms.get(0) {
+                                if let Some(ch) = xkb_sym_to_char(sym0) {
+                                    result.entry(ch).or_insert((evdev_key, false));
+                                }
+                            }
+                            // Level 1: shifted
+                            if let Some(sym1) = syms.get(1) {
+                                if let Some(ch) = xkb_sym_to_char(sym1) {
+                                    result.entry(ch).or_insert((evdev_key, true));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if result.is_empty() {
+            log::warn!("Dynamic layout map is empty, falling back to static map");
+            return None;
+        }
+
+        log::info!("Built dynamic layout map with {} entries", result.len());
+        Some(result)
+    }
+
+    /// Get or build the dynamic layout map. Returns None if US QWERTY or on failure.
+    fn get_dynamic_layout_map() -> &'static Option<HashMap<char, (evdev::Key, bool)>> {
+        DYNAMIC_LAYOUT_MAP.get_or_init(|| build_dynamic_layout_map())
+    }
+
     pub fn create_uinput_keyboard() -> ResultType<VirtualDevice> {
         // TODO: ensure keys here
         let mut keys = AttributeSet::<evdev::Key>::new();
@@ -683,17 +895,19 @@ pub mod service {
         } else {
             match key {
                 enigo::Key::Layout(c) => {
+                    // Try dynamic layout map first (handles AZERTY, QWERTZ, etc.)
+                    if let Some(dynamic_map) = get_dynamic_layout_map() {
+                        if let Some((k, is_shift)) = dynamic_map.get(&c) {
+                            log::trace!("mapkey {:?}, dynamic get {:?}", &key, k);
+                            return Ok((k.clone(), is_shift.clone()));
+                        }
+                    }
+                    // Fall back to static QWERTY map
                     if let Some((k, is_shift)) = KEY_MAP_LAYOUT.get(&c) {
-                        log::trace!("mapkey {:?}, get {:?}", &key, k);
+                        log::trace!("mapkey {:?}, static get {:?}", &key, k);
                         return Ok((k.clone(), is_shift.clone()));
                     }
                 }
-                // enigo::Key::Raw(c) => {
-                //     let k = evdev::Key::new(c);
-                //     if !format!("{:?}", &k).contains("unknown key") {
-                //         return Ok(k.clone());
-                //     }
-                // }
                 _ => {}
             }
         }

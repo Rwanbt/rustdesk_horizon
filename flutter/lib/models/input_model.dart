@@ -739,7 +739,8 @@ class InputModel {
       }
     }
     final isDesktopAndMapMode =
-        isDesktop || (isWebDesktop && keyboardMode == kKeyMapMode);
+        (isDesktop && keyboardMode == kKeyMapMode) ||
+        (isWebDesktop && keyboardMode == kKeyMapMode);
     if (isMobileAndMapMode || isDesktopAndMapMode) {
       // FIXME: e.character is wrong for dead keys, eg: ^ in de
       newKeyboardMode(
@@ -829,9 +830,10 @@ class InputModel {
   }
 
   void sendRawKey(RawKeyEvent e, {bool? down, bool? press}) {
-    // for maximum compatibility
-    final label = physicalKeyMap[e.physicalKey.usbHidUsage] ??
-        logicalKeyMap[e.logicalKey.keyId] ??
+    // Prefer logical key map to respect the user's keyboard layout (AZERTY, QWERTZ, etc.)
+    // Physical key map is QWERTY-only and ignores the OS layout setting.
+    final label = logicalKeyMap[e.logicalKey.keyId] ??
+        physicalKeyMap[e.physicalKey.usbHidUsage] ??
         e.logicalKey.keyLabel;
     inputKey(label, down: down, press: press ?? false);
   }
@@ -847,9 +849,10 @@ class InputModel {
   }
 
   void sendKey(KeyEvent e, {bool? down, bool? press}) {
-    // for maximum compatibility
-    final label = physicalKeyMap[e.physicalKey.usbHidUsage] ??
-        logicalKeyMap[e.logicalKey.keyId] ??
+    // Prefer logical key map to respect the user's keyboard layout (AZERTY, QWERTZ, etc.)
+    // Physical key map is QWERTY-only and ignores the OS layout setting.
+    final label = logicalKeyMap[e.logicalKey.keyId] ??
+        physicalKeyMap[e.physicalKey.usbHidUsage] ??
         e.logicalKey.keyLabel;
     inputKey(label, down: down, press: press ?? false);
   }
