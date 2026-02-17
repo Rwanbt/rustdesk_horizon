@@ -791,5 +791,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Relative mouse mode", "Mode souris relatif"),
         ("Show more", "Voir plus"),
         ("Show less", "Voir moins"),
+        ("Open Keyboard", "Ouvrir le clavier"),
+        ("Text Selection", "Sélection de texte"),
     ].iter().cloned().collect();
 }

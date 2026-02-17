@@ -1417,8 +1417,10 @@ class FfiModel with ChangeNotifier {
   checkDesktopKeyboardMode() async {
     if (isInputSourceFlutter) {
       // Local side, flutter keyboard input source
-      // Currently only map mode is supported, legacy mode is used for compatibility.
-      for (final mode in [kKeyMapMode, kKeyLegacyMode]) {
+      // Prefer Legacy mode: it sends logical key labels (layout-aware),
+      // so non-QWERTY layouts (AZERTY, QWERTZ, etc.) work correctly.
+      // Map mode sends physical USB HID codes which are always QWERTY.
+      for (final mode in [kKeyLegacyMode, kKeyMapMode]) {
         if (bind.sessionIsKeyboardModeSupported(
             sessionId: sessionId, mode: mode)) {
           await bind.sessionSetKeyboardMode(sessionId: sessionId, value: mode);
@@ -1435,7 +1437,8 @@ class FfiModel with ChangeNotifier {
       }
 
       // If current keyboard mode is not supported, change to another one.
-      for (final mode in [kKeyMapMode, kKeyTranslateMode, kKeyLegacyMode]) {
+      // Prefer Legacy for layout compatibility, then Translate, then Map.
+      for (final mode in [kKeyLegacyMode, kKeyTranslateMode, kKeyMapMode]) {
         if (bind.sessionIsKeyboardModeSupported(
             sessionId: sessionId, mode: mode)) {
           bind.sessionSetKeyboardMode(sessionId: sessionId, value: mode);

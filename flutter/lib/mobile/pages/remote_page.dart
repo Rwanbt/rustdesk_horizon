@@ -387,7 +387,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     // destroy first, so that our _value trick can work
     _value = initText;
     _textController.text = _value;
-    setState(() => _showEdit = false);
+    setState(() {
+      _showEdit = false;
+      _showGestureHelp = false;
+      _showBar = false;
+    });
     _timer?.cancel();
     _timer = Timer(kMobileDelaySoftKeyboard, () {
       // show now, and sleep a while to requestFocus to
@@ -412,10 +416,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final keyboardIsVisible =
         keyboardVisibilityController.isVisible && _showEdit;
-    // Show FAB when: keyboard is up, gesture help is shown, or bar is hidden but user recently interacted
+    // Show FAB when: keyboard is up, or bar is hidden but user recently interacted
+    // (gesture help has its own close button inside the panel)
     final showActionButton = keyboardIsVisible ||
-        _showGestureHelp ||
-        (!_showBar && _showFloatingButton);
+        (!_showBar && !_showGestureHelp && _showFloatingButton);
 
     return WillPopScope(
       onWillPop: () async {
@@ -441,7 +445,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               : FloatingActionButton(
                   mini: !keyboardIsVisible,
                   child: Icon(
-                    (keyboardIsVisible || _showGestureHelp)
+                    keyboardIsVisible
                         ? Icons.expand_more
                         : Icons.expand_less,
                     color: Colors.white,
@@ -454,8 +458,6 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                         gFFI.invokeMethod("enable_soft_keyboard", false);
                         _mobileFocusNode.unfocus();
                         _physicalFocusNode.requestFocus();
-                      } else if (_showGestureHelp) {
-                        _showGestureHelp = false;
                       } else {
                         _showBar = !_showBar;
                       }
@@ -514,6 +516,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                                         child: getBodyForMobile(),
                                         ffi: gFFI,
                                         onInteraction: _resetHideBarTimer,
+                                        onOpenKeyboard: openKeyboard,
                                       ),
                               );
                             }),
@@ -552,13 +555,18 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
             sigmaY: MyTheme.isSoberTheme ? 10 : 0),
         child: BottomAppBar(
           elevation: MyTheme.isSoberTheme ? 0 : 10,
+          padding: EdgeInsets.zero,
           color: MyTheme.dynamicAccent.withOpacity(
               MyTheme.isSoberTheme ? 0.5 : 1.0),
           child: Row(
             mainAxisSize: MainAxisSize.max,
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: <Widget>[
-          Row(
+          Flexible(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: <Widget>[
                     IconButton(
                       color: Colors.white,
@@ -634,6 +642,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                       },
                     ),
                   ]),
+          ),
+          ),
           Obx(() => IconButton(
                 color: Colors.white,
                 icon: Icon(Icons.expand_more),
@@ -937,19 +947,45 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   /// aka changeTouchMode
   BottomAppBar getGestureHelp() {
     return BottomAppBar(
-        child: SingleChildScrollView(
-            controller: ScrollController(),
-            padding: EdgeInsets.symmetric(vertical: 10),
-            child: GestureHelp(
-              touchMode: gFFI.ffiModel.touchMode,
-              onTouchModeChange: (t) {
-                gFFI.ffiModel.toggleTouchMode();
-                final v = gFFI.ffiModel.touchMode ? 'Y' : 'N';
-                bind.mainSetLocalOption(key: kOptionTouchMode, value: v);
-              },
-              virtualMouseMode: gFFI.ffiModel.virtualMouseMode,
-              inputModel: gFFI.inputModel,
-            )));
+        child: Stack(
+          children: [
+            SingleChildScrollView(
+              controller: ScrollController(),
+              padding: EdgeInsets.symmetric(vertical: 10),
+              child: GestureHelp(
+                touchMode: gFFI.ffiModel.touchMode,
+                onTouchModeChange: (t) {
+                  gFFI.ffiModel.toggleTouchMode();
+                  final v = gFFI.ffiModel.touchMode ? 'Y' : 'N';
+                  bind.mainSetLocalOption(key: kOptionTouchMode, value: v);
+                },
+                virtualMouseMode: gFFI.ffiModel.virtualMouseMode,
+                inputModel: gFFI.inputModel,
+                onChanged: () => setState(() {}),
+              ),
+            ),
+            Positioned(
+              top: 4,
+              right: 4,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(16),
+                onTap: () {
+                  setState(() => _showGestureHelp = false);
+                  _startAutoHideTimer();
+                },
+                child: Container(
+                  padding: EdgeInsets.all(4),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).scaffoldBackgroundColor.withOpacity(0.7),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(Icons.close, size: 18,
+                      color: Theme.of(context).hintColor),
+                ),
+              ),
+            ),
+          ],
+        ));
   }
 
   // * Currently mobile does not enable map mode

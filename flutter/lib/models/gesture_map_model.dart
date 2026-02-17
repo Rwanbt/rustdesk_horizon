@@ -1,5 +1,4 @@
 import 'package:flutter/widgets.dart';
-import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 
 enum GestureInput {
@@ -30,6 +29,8 @@ enum GestureAction {
   undo,
   redo,
   middleClick,
+  openKeyboard,
+  textSelection,
 }
 
 const Map<GestureInput, String> gestureInputLabels = {
@@ -60,6 +61,8 @@ const Map<GestureAction, String> gestureActionLabels = {
   GestureAction.undo: 'Undo',
   GestureAction.redo: 'Redo',
   GestureAction.middleClick: 'Middle Click',
+  GestureAction.openKeyboard: 'Open Keyboard',
+  GestureAction.textSelection: 'Text Selection',
 };
 
 class GestureMapModel {
@@ -86,7 +89,7 @@ class GestureMapModel {
     GestureInput.pan2: GestureAction.panCanvas,
     GestureInput.pan3: GestureAction.scroll,
     GestureInput.pinch: GestureAction.zoomCanvas,
-    GestureInput.holdDrag: GestureAction.nothing,
+    GestureInput.holdDrag: GestureAction.textSelection,
   };
 
   static String _optionKey(bool touchMode, GestureInput input) {
@@ -168,6 +171,7 @@ class GestureMapModel {
     GestureInput.tap1,
     GestureInput.longPress,
     GestureInput.pan1,
+    GestureInput.holdDrag,
     GestureInput.pan3,
     GestureInput.pan2,
     GestureInput.pinch,
