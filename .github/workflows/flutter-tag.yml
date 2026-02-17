@@ -1,4 +1,4 @@
-name: Flutter Tag Build
+name: Fulldesk Tag Build
 
 on:
   workflow_dispatch:

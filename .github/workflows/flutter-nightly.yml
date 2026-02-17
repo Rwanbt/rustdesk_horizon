@@ -1,4 +1,4 @@
-name: Flutter Nightly Build
+name: Fulldesk Nightly Build
 
 on:
   schedule:
