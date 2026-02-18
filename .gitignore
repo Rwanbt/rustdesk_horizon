@@ -60,3 +60,9 @@ flutter/web/
 nul
 # Build artifacts
 *.apk
+# Rust compiler crash dumps
+rustc-ice-*.txt
+# Local debug/build scripts
+build_apk.bat
+read_service_logs.ps1
+search_logs.ps1
