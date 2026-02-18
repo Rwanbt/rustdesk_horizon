@@ -1,4 +1,4 @@
-use hbb_common::ResultType;
+use hbb_common::{bail, ResultType};
 use std::sync::Mutex;
 
 #[cfg(windows)]
@@ -37,7 +37,13 @@ pub fn set_custom_resolution(w: u32, h: u32) {
 }
 
 pub fn take_custom_resolution() -> Option<(u32, u32)> {
-    CUSTOM_VD_RESOLUTION.lock().unwrap().take()
+    // Clone instead of take: multiple concurrent plug_in_monitor calls
+    // (e.g. adding several virtual displays) must all get the resolution.
+    CUSTOM_VD_RESOLUTION.lock().unwrap().clone()
+}
+
+pub fn clear_custom_resolution() {
+    *CUSTOM_VD_RESOLUTION.lock().unwrap() = None;
 }
 
 #[cfg(windows)]
@@ -528,7 +534,7 @@ pub mod rustdesk_idd {
 #[cfg(windows)]
 pub mod amyuni_idd {
     use super::windows;
-    use crate::platform::{reg_display_settings, win_device};
+    use crate::platform::win_device;
     use hbb_common::{bail, lazy_static, log, tokio::time::Instant, ResultType};
     use std::{
         ptr::null_mut,
@@ -708,7 +714,10 @@ pub mod amyuni_idd {
     ) -> ResultType<()> {
         let timeout = Duration::from_secs(3);
         let now = Instant::now();
-        let reg_connectivity_old = reg_display_settings::read_reg_connectivity();
+        // Record Amyuni device count BEFORE plug-in so the background thread
+        // can wait for EnumDisplayDevices to actually report the new display.
+        let old_amyuni_count =
+            windows::get_device_names(Some(super::AMYUNI_IDD_DEVICE_STRING)).len();
         loop {
             match plug_monitor_(add, wait_timeout) {
                 Ok(_) => {
@@ -729,44 +738,53 @@ pub mod amyuni_idd {
                 }
             }
         }
-        if let Ok(old_connectivity_old) = reg_connectivity_old {
-            std::thread::spawn(move || {
-                try_reset_resolution_on_first_plug_in(old_connectivity_old.len(), width, height);
-            });
-        }
+        std::thread::spawn(move || {
+            try_reset_resolution_on_first_plug_in(old_amyuni_count, width, height);
+        });
 
         Ok(())
     }
 
+    /// Wait for the newly plugged-in Amyuni display to become visible via
+    /// `EnumDisplayDevices` (not just the registry), then apply the target
+    /// resolution to it.  The old registry-based check fired too early:
+    /// the registry connectivity changes before EnumDisplayDevices reports
+    /// the new display with non-zero dimensions, so subsequent VDs never
+    /// got their resolution applied.
     fn try_reset_resolution_on_first_plug_in(
-        old_connectivity_len: usize,
+        old_amyuni_count: usize,
         width: usize,
         height: usize,
     ) {
-        for _ in 0..10 {
+        let (w, h) = (width, height);
+        for attempt in 0..30 {
             std::thread::sleep(Duration::from_millis(300));
-            if let Ok(reg_connectivity_new) = reg_display_settings::read_reg_connectivity() {
-                if reg_connectivity_new.len() != old_connectivity_len {
-                    let (w, h) = (width, height);
-                    log::info!(
-                        "Amyuni: applying resolution {}x{} to virtual display(s)",
-                        w,
-                        h
-                    );
-                    for name in
-                        windows::get_device_names(Some(super::AMYUNI_IDD_DEVICE_STRING)).iter()
-                    {
-                        match crate::platform::change_resolution(&name, w, h) {
-                            Ok(_) => log::info!("Amyuni: successfully set {} to {}x{}", name, w, h),
-                            Err(e) => {
-                                log::error!("Amyuni: failed to set {} to {}x{}: {}", name, w, h, e)
-                            }
+            let current_names =
+                windows::get_device_names(Some(super::AMYUNI_IDD_DEVICE_STRING));
+            if current_names.len() > old_amyuni_count {
+                log::info!(
+                    "Amyuni: new display detected ({} -> {}) after {}ms, applying resolution {}x{}",
+                    old_amyuni_count,
+                    current_names.len(),
+                    (attempt + 1) * 300,
+                    w,
+                    h
+                );
+                for name in current_names.iter() {
+                    match crate::platform::change_resolution(&name, w, h) {
+                        Ok(_) => log::info!("Amyuni: successfully set {} to {}x{}", name, w, h),
+                        Err(e) => {
+                            log::error!("Amyuni: failed to set {} to {}x{}: {}", name, w, h, e)
                         }
                     }
-                    break;
                 }
+                return;
             }
         }
+        log::warn!(
+            "Amyuni: timed out waiting for new display (still {} devices after 9s)",
+            windows::get_device_names(Some(super::AMYUNI_IDD_DEVICE_STRING)).len()
+        );
     }
 
     pub fn plug_in_headless() -> ResultType<()> {

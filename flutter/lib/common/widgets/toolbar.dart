@@ -934,15 +934,48 @@ Future<void> toggleVirtualDisplayWithResolution({
   required bool on,
 }) async {
   if (on && (isAndroid || isIOS)) {
-    final physicalSize = ui.window.physicalSize;
+    Size physicalSize = Size.zero;
+    String source = 'none';
+
+    // Method 1: Display.size from PlatformDispatcher (native display resolution)
+    try {
+      final displays = ui.PlatformDispatcher.instance.displays;
+      if (displays.isNotEmpty) {
+        physicalSize = displays.first.size;
+        source = 'Display.size';
+      }
+    } catch (_) {}
+
+    // Method 2: FlutterView.physicalSize
+    if (physicalSize == Size.zero) {
+      try {
+        final views = ui.PlatformDispatcher.instance.views;
+        if (views.isNotEmpty) {
+          physicalSize = views.first.physicalSize;
+          source = 'FlutterView.physicalSize';
+        }
+      } catch (_) {}
+    }
+
+    // Method 3: deprecated ui.window.physicalSize
+    if (physicalSize == Size.zero) {
+      physicalSize = ui.window.physicalSize;
+      source = 'ui.window.physicalSize';
+    }
+
+    debugPrint("VD: physicalSize=$physicalSize (source=$source)");
+
     final pw = physicalSize.width.toInt();
     final ph = physicalSize.height.toInt();
     // Force landscape: use the larger dimension as width
     final w = pw > ph ? pw : ph;
     final h = pw > ph ? ph : pw;
     if (w > 0 && h > 0) {
+      debugPrint("VD: sending #vd_res ${w}x$h (raw=${pw}x$ph)");
       bind.sessionSendChat(sessionId: sessionId, text: "#vd_res ${w}x$h");
-      await Future.delayed(const Duration(milliseconds: 150));
+      await Future.delayed(const Duration(milliseconds: 500));
+    } else {
+      debugPrint("VD: WARNING physicalSize is zero, skipping #vd_res");
     }
   }
   bind.sessionToggleVirtualDisplay(sessionId: sessionId, index: index, on: on);

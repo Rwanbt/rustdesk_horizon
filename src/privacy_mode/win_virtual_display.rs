@@ -7,7 +7,7 @@ use std::{
     thread,
     time::Duration,
 };
-use virtual_display::MonitorMode;
+use virtual_display_manager::MonitorMode;
 use winapi::{
     shared::{
         minwindef::{DWORD, FALSE},

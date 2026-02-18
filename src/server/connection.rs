@@ -3042,6 +3042,7 @@ impl Connection {
                     Some(misc::Union::ChatMessage(c)) => {
                         #[cfg(any(windows, target_os = "linux"))]
                         if c.text.starts_with("#vd_res ") {
+                            log::info!("VD: received chat '{}'", c.text);
                             if let Some(res) = c.text.strip_prefix("#vd_res ") {
                                 let parts: Vec<&str> = res.split('x').collect();
                                 if parts.len() == 2 {
@@ -3049,7 +3050,10 @@ impl Connection {
                                         (parts[0].parse::<u32>(), parts[1].parse::<u32>())
                                     {
                                         if (640..=7680).contains(&w) && (480..=4320).contains(&h) {
+                                            log::info!("VD: stored resolution {}x{}", w, h);
                                             self.virtual_display_resolution = Some((w, h));
+                                        } else {
+                                            log::warn!("VD: resolution {}x{} out of range", w, h);
                                         }
                                     }
                                 }
@@ -3662,10 +3666,9 @@ impl Connection {
                 self.send(make_msg("Virtual display not supported on this system".to_string()))
                     .await;
             } else {
-                let (w, h) = self
-                    .virtual_display_resolution
-                    .take()
-                    .unwrap_or((1920, 1080));
+                let vd_res = self.virtual_display_resolution;
+                let (w, h) = vd_res.unwrap_or((1920, 1080));
+                log::info!("VD: toggle_virtual_display ON with resolution {}x{} (from_client={:?})", w, h, vd_res);
                 virtual_display_manager::set_custom_resolution(w, h);
                 let modes = vec![virtual_display_manager::MonitorMode {
                     width: w,
