@@ -602,13 +602,8 @@ jobs:
       fail-fast: false
       matrix:
         job:
-          - {
-              target: x86_64-apple-darwin,
-              os: macos-13, # macos-13 is the last Intel runner available on GitHub Actions
-              extra-build-args: "",
-              arch: x86_64,
-              vcpkg-triplet: x64-osx,
-            }
+          # x86_64-apple-darwin removed: macos-13 Intel runners deprecated by GitHub Actions (2025)
+          # Intel Mac users can use the aarch64 build via Rosetta 2
           - {
               target: aarch64-apple-darwin,
               os: macos-14,
@@ -820,12 +815,6 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ inputs.upload-artifact }}
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: fulldesk-unsigned-macos-x86_64
-          path: ./
-
       - name: Download Artifacts
         uses: actions/download-artifact@v4
         with:
@@ -1591,8 +1580,8 @@ jobs:
             export CARGO_INCREMENTAL=0
             export DEB_ARCH=${{ matrix.job.deb_arch }}
             python3 ./build.py --flutter --skip-cargo
-            for name in fulldesk*??.deb; do
-              mv "$name" "${name%%.deb}-${{ matrix.job.arch }}.deb"
+            for name in rustdesk*??.deb; do
+              mv "$name" "fulldesk-${{ env.VERSION }}-${{ matrix.job.arch }}.deb"
             done
 
             # rpm package
@@ -1605,8 +1594,8 @@ jobs:
             esac
             HBB=`pwd` rpmbuild ./res/rpm-flutter.spec -bb
             pushd ~/rpmbuild/RPMS/${{ matrix.job.arch }}
-            for name in fulldesk*??.rpm; do
-                mv "$name" /workspace/"${name%%.rpm}.rpm"
+            for name in rustdesk*??.rpm; do
+                mv "$name" /workspace/"fulldesk-${{ env.VERSION }}-${{ matrix.job.arch }}.rpm"
             done
 
             # rpm suse package
@@ -1619,8 +1608,8 @@ jobs:
             esac
             HBB=`pwd` rpmbuild ./res/rpm-flutter-suse.spec -bb
             pushd ~/rpmbuild/RPMS/${{ matrix.job.arch }}
-            for name in fulldesk*??.rpm; do
-                mv "$name" /workspace/"${name%%.rpm}-suse.rpm"
+            for name in rustdesk*??.rpm; do
+                mv "$name" /workspace/"fulldesk-${{ env.VERSION }}-${{ matrix.job.arch }}-suse.rpm"
             done
 
       - name: Publish debian/rpm package
@@ -1874,9 +1863,9 @@ jobs:
       - name: Rename fulldesk
         shell: bash
         run: |
-          for name in fulldesk*??.deb; do
+          for name in rustdesk*??.deb; do
               # use cp to duplicate deb files to fit other packages.
-              cp "$name" "${name%%.deb}-${{ matrix.job.arch }}-sciter.deb"
+              cp "$name" "fulldesk-${{ env.VERSION }}-${{ matrix.job.arch }}-sciter.deb"
           done
 
       - name: Publish debian package
