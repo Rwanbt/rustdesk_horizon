@@ -77,6 +77,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   final FocusNode _mobileFocusNode = FocusNode();
   final FocusNode _physicalFocusNode = FocusNode();
   var _showEdit = false; // use soft keyboard
+  bool _autoVirtualDisplayAdded = false;
 
   InputModel get inputModel => gFFI.inputModel;
   SessionID get sessionId => gFFI.sessionId;
@@ -122,6 +123,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       }
       _disableAndroidSoftKeyboard(
           isKeyboardVisible: keyboardVisibilityController.isVisible);
+      _maybeAutoAddVirtualDisplay();
     });
     WidgetsBinding.instance.addObserver(this);
   }
@@ -159,6 +161,16 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       trySyncClipboard();
     }
+  }
+
+  void _maybeAutoAddVirtualDisplay() {
+    if (!showVirtualDisplayMenu(gFFI)) return;
+    final autoVd = bind.sessionGetToggleOptionSync(
+        sessionId: gFFI.sessionId, arg: kOptionAutoVirtualDisplay);
+    if (!autoVd) return;
+    bind.sessionToggleVirtualDisplay(
+        sessionId: gFFI.sessionId, index: 0, on: true);
+    _autoVirtualDisplayAdded = true;
   }
 
   // For client side

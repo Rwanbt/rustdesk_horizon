@@ -64,6 +64,8 @@ use windows::Win32::Foundation::{CloseHandle, HANDLE};
 
 #[cfg(windows)]
 use crate::virtual_display_manager;
+#[cfg(windows)]
+use virtual_display;
 pub type Sender = mpsc::UnboundedSender<(Instant, Arc<Message>)>;
 
 lazy_static::lazy_static! {
@@ -247,6 +249,10 @@ pub struct Connection {
     // by peer
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     enable_file_transfer: bool,
+    #[cfg(windows)]
+    virtual_display_resolution: Option<(u32, u32)>,
+    #[cfg(windows)]
+    virtual_display_indices: Vec<i32>,
     // by peer
     audio_sender: Option<MediaSender>,
     // audio by the remote peer/client
@@ -430,6 +436,10 @@ impl Connection {
             disable_audio: false,
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             enable_file_transfer: false,
+            #[cfg(windows)]
+            virtual_display_resolution: None,
+            #[cfg(windows)]
+            virtual_display_indices: Vec::new(),
             disable_clipboard: false,
             disable_keyboard: false,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -3016,9 +3026,30 @@ impl Connection {
                         self.toggle_privacy_mode(t).await;
                     }
                     Some(misc::Union::ChatMessage(c)) => {
-                        self.send_to_cm(ipc::Data::ChatMessage { text: c.text });
-                        self.chat_unanswered = true;
-                        self.update_auto_disconnect_timer();
+                        #[cfg(windows)]
+                        if c.text.starts_with("#vd_res ") {
+                            if let Some(res) = c.text.strip_prefix("#vd_res ") {
+                                let parts: Vec<&str> = res.split('x').collect();
+                                if parts.len() == 2 {
+                                    if let (Ok(w), Ok(h)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                                        if (640..=7680).contains(&w) && (480..=4320).contains(&h) {
+                                            self.virtual_display_resolution = Some((w, h));
+                                        }
+                                    }
+                                }
+                            }
+                            self.update_auto_disconnect_timer();
+                        } else {
+                            self.send_to_cm(ipc::Data::ChatMessage { text: c.text });
+                            self.chat_unanswered = true;
+                            self.update_auto_disconnect_timer();
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            self.send_to_cm(ipc::Data::ChatMessage { text: c.text });
+                            self.chat_unanswered = true;
+                            self.update_auto_disconnect_timer();
+                        }
                     }
                     Some(misc::Union::Option(o)) => {
                         self.update_options(&o).await;
@@ -3605,12 +3636,23 @@ impl Connection {
             msg_out
         };
 
+        if !self.keyboard {
+            self.send(make_msg("No permission".to_string())).await;
+            return;
+        }
+
         if t.on {
             if !virtual_display_manager::is_virtual_display_supported() {
                 self.send(make_msg("idd_not_support_under_win10_2004_tip".to_string()))
                     .await;
             } else {
-                if let Err(e) = virtual_display_manager::plug_in_monitor(t.display as _, Vec::new())
+                let (w, h) = self.virtual_display_resolution.take().unwrap_or((1920, 1080));
+                let modes = vec![virtual_display::MonitorMode {
+                    width: w,
+                    height: h,
+                    sync: 60,
+                }];
+                if let Err(e) = virtual_display_manager::plug_in_monitor(t.display as _, modes)
                 {
                     log::error!("Failed to plug in virtual display: {}", e);
                     self.send(make_msg(format!(
@@ -3618,6 +3660,10 @@ impl Connection {
                         e
                     )))
                     .await;
+                } else {
+                    self.virtual_display_indices.push(t.display);
+                    // For Amyuni IDD, modes are ignored; override resolution after plug-in
+                    virtual_display_manager::set_virtual_display_resolution(w, h);
                 }
             }
         } else {
@@ -3628,6 +3674,8 @@ impl Connection {
                     e
                 )))
                 .await;
+            } else {
+                self.virtual_display_indices.retain(|&i| i != t.display);
             }
         }
     }
@@ -4125,6 +4173,15 @@ impl Connection {
         let data = ipc::Data::Close;
         self.tx_to_cm.send(data).ok();
         self.port_forward_socket.take();
+        #[cfg(windows)]
+        {
+            // Plug out virtual displays created by this connection
+            for idx in self.virtual_display_indices.drain(..) {
+                if let Err(e) = virtual_display_manager::plug_out_monitor(idx, false, true) {
+                    log::warn!("Failed to plug out virtual display {} on close: {}", idx, e);
+                }
+            }
+        }
     }
 
     // The `reason` should be consistent with `check_if_retry` if not empty
