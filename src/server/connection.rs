@@ -62,7 +62,7 @@ use system_shutdown;
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use crate::virtual_display_manager;
 pub type Sender = mpsc::UnboundedSender<(Instant, Arc<Message>)>;
 
@@ -247,9 +247,9 @@ pub struct Connection {
     // by peer
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     enable_file_transfer: bool,
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     virtual_display_resolution: Option<(u32, u32)>,
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     virtual_display_indices: Vec<i32>,
     // by peer
     audio_sender: Option<MediaSender>,
@@ -437,9 +437,9 @@ impl Connection {
             disable_audio: false,
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             enable_file_transfer: false,
-            #[cfg(any(windows, target_os = "linux"))]
+            #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
             virtual_display_resolution: None,
-            #[cfg(any(windows, target_os = "linux"))]
+            #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
             virtual_display_indices: Vec::new(),
             disable_clipboard: false,
             disable_keyboard: false,
@@ -1478,6 +1478,10 @@ impl Connection {
                 "supported_privacy_mode_impl".into(),
                 json!(privacy_mode::get_supported_privacy_mode_impl()),
             );
+            let vd_additions = virtual_display_manager::get_platform_additions();
+            if !vd_additions.is_empty() {
+                platform_additions.extend(vd_additions);
+            }
         }
 
         #[cfg(any(target_os = "windows", feature = "unix-file-copy-paste"))]
@@ -3032,7 +3036,7 @@ impl Connection {
                         let set = displays.set.iter().map(|d| *d as usize).collect::<Vec<_>>();
                         self.capture_displays(&add, &sub, &set).await;
                     }
-                    #[cfg(any(windows, target_os = "linux"))]
+                    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
                     Some(misc::Union::ToggleVirtualDisplay(t)) => {
                         self.toggle_virtual_display(t).await;
                     }
@@ -3040,7 +3044,7 @@ impl Connection {
                         self.toggle_privacy_mode(t).await;
                     }
                     Some(misc::Union::ChatMessage(c)) => {
-                        #[cfg(any(windows, target_os = "linux"))]
+                        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
                         if c.text.starts_with("#vd_res ") {
                             log::info!("VD: received chat '{}'", c.text);
                             if let Some(res) = c.text.strip_prefix("#vd_res ") {
@@ -3064,7 +3068,7 @@ impl Connection {
                             self.chat_unanswered = true;
                             self.update_auto_disconnect_timer();
                         }
-                        #[cfg(not(any(windows, target_os = "linux")))]
+                        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
                         {
                             self.send_to_cm(ipc::Data::ChatMessage { text: c.text });
                             self.chat_unanswered = true;
@@ -3641,7 +3645,7 @@ impl Connection {
         }
     }
 
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     async fn toggle_virtual_display(&mut self, t: ToggleVirtualDisplay) {
         let make_msg = |text: String| {
             let mut msg_out = Message::new();
@@ -4229,7 +4233,7 @@ impl Connection {
         let data = ipc::Data::Close;
         self.tx_to_cm.send(data).ok();
         self.port_forward_socket.take();
-        #[cfg(any(windows, target_os = "linux"))]
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         {
             // Plug out virtual displays created by this connection
             for idx in self.virtual_display_indices.drain(..) {
@@ -5580,7 +5584,7 @@ mod raii {
                 }
                 #[cfg(not(any(target_os = "android", target_os = "ios")))]
                 display_service::restore_resolutions();
-                #[cfg(any(windows, target_os = "linux"))]
+                #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
                 let _ = virtual_display_manager::reset_all();
                 #[cfg(target_os = "linux")]
                 scrap::wayland::pipewire::try_close_session();
