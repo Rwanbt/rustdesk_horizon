@@ -94,7 +94,16 @@ lazy_static::lazy_static! {
 
 #[cfg(target_os = "windows")]
 fn get_lib_name() -> String {
-    format!("{}.dll", LIB_NAME_VIRTUAL_DISPLAY)
+    let dll_name = format!("{}.dll", LIB_NAME_VIRTUAL_DISPLAY);
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let full = dir.join(&dll_name);
+            if full.exists() {
+                return full.to_string_lossy().into_owned();
+            }
+        }
+    }
+    dll_name
 }
 
 #[cfg(target_os = "linux")]
