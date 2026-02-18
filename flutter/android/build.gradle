@@ -1,7 +1,7 @@
 allprojects {
     repositories {
         google()
-        jcenter()
+        mavenCentral()
         maven { url 'https://jitpack.io' }
     }
 }
@@ -12,6 +12,19 @@ subprojects {
 }
 subprojects {
     project.evaluationDependsOn(':app')
+}
+
+// AGP 8.x requires namespace for all modules. Auto-set from AndroidManifest.xml for plugins that don't declare it.
+subprojects {
+    pluginManager.withPlugin('com.android.library') {
+        def manifest = file("src/main/AndroidManifest.xml")
+        if (manifest.exists()) {
+            def pkg = new groovy.util.XmlParser().parse(manifest).attribute('package')
+            if (pkg) {
+                android.namespace = android.namespace ?: pkg
+            }
+        }
+    }
 }
 
 tasks.register("clean", Delete) {

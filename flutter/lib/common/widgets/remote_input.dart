@@ -62,6 +62,7 @@ class RawTouchGestureDetectorRegion extends StatefulWidget {
   final Widget child;
   final FFI ffi;
   final bool isCamera;
+  final VoidCallback? onInteraction;
   late final InputModel inputModel = ffi.inputModel;
   late final FfiModel ffiModel = ffi.ffiModel;
 
@@ -69,6 +70,7 @@ class RawTouchGestureDetectorRegion extends StatefulWidget {
     required this.child,
     required this.ffi,
     this.isCamera = false,
+    this.onInteraction,
   });
 
   @override
@@ -137,6 +139,7 @@ class _RawTouchGestureDetectorRegionState
   }
 
   onTapDown(TapDownDetails d) async {
+    widget.onInteraction?.call();
     lastDeviceKind = d.kind;
     _lastTapDownGlobalPosition = d.globalPosition;
     if (isNotTouchBasedDevice()) {
@@ -195,6 +198,7 @@ class _RawTouchGestureDetectorRegionState
   }
 
   onDoubleTapDown(TapDownDetails d) async {
+    widget.onInteraction?.call();
     lastDeviceKind = d.kind;
     if (isNotTouchBasedDevice()) {
       return;
@@ -229,6 +233,7 @@ class _RawTouchGestureDetectorRegionState
   }
 
   onLongPressDown(LongPressDownDetails d) async {
+    widget.onInteraction?.call();
     lastDeviceKind = d.kind;
     if (isNotTouchBasedDevice()) {
       return;
@@ -297,6 +302,7 @@ class _RawTouchGestureDetectorRegionState
   }
 
   onDoubleFinerTapDown(TapDownDetails d) async {
+    widget.onInteraction?.call();
     lastDeviceKind = d.kind;
     if (isNotTouchBasedDevice()) {
       return;
@@ -322,6 +328,7 @@ class _RawTouchGestureDetectorRegionState
   }
 
   onHoldDragStart(DragStartDetails d) async {
+    widget.onInteraction?.call();
     lastDeviceKind = d.kind;
     if (isNotTouchBasedDevice()) {
       return;
@@ -352,6 +359,7 @@ class _RawTouchGestureDetectorRegionState
   }
 
   onOneFingerPanStart(BuildContext context, DragStartDetails d) async {
+    widget.onInteraction?.call();
     final TapDownDetails? lastTapDownDetails = _lastTapDownDetails;
     _lastTapDownDetails = null;
     lastDeviceKind = d.kind ?? lastDeviceKind;
@@ -447,6 +455,7 @@ class _RawTouchGestureDetectorRegionState
 
   // scale + pan event
   onTwoFingerScaleStart(ScaleStartDetails d) {
+    widget.onInteraction?.call();
     _lastTapDownDetails = null;
     if (isNotTouchBasedDevice()) {
       return;
