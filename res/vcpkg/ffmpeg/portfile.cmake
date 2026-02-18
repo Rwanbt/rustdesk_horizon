@@ -524,7 +524,7 @@ if(VCPKG_TARGET_IS_WINDOWS)
                 OUTPUT_VARIABLE CYG_INSTALLED_DIR
                 OUTPUT_STRIP_TRAILING_WHITESPACE
             )
-            vcpkg_replace_string("${PKGCONFIG_FILE}" "-libpath:${CYG_INSTALLED_DIR}${_debug}lib/pkgconfig/../../lib " "")
+            vcpkg_replace_string("${PKGCONFIG_FILE}" "-libpath:${CYG_INSTALLED_DIR}${_debug}lib/pkgconfig/../../lib " "" IGNORE_UNCHANGED)
 
             # transform libdir, includedir, and prefix paths from cygwin style to windows style
             file(READ "${PKGCONFIG_FILE}" PKGCONFIG_CONTENT)
@@ -543,7 +543,7 @@ if(VCPKG_TARGET_IS_WINDOWS)
                     OUTPUT_STRIP_TRAILING_WHITESPACE
                 )
                 file(TO_CMAKE_PATH "${FIXED_PATH}" FIXED_PATH)
-                vcpkg_replace_string("${PKGCONFIG_FILE}" "${PATH_NAME}=${PATH_VALUE}" "${PATH_NAME}=${FIXED_PATH}")
+                vcpkg_replace_string("${PKGCONFIG_FILE}" "${PATH_NAME}=${PATH_VALUE}" "${PATH_NAME}=${FIXED_PATH}" IGNORE_UNCHANGED)
             endforeach()
 
             # list libraries with -l flag (so pkgconf knows they are libraries and not just linker flags)
@@ -560,7 +560,7 @@ if(VCPKG_TARGET_IS_WINDOWS)
                     set(LIBS_VALUE_OLD "${LIBS_VALUE}")
                     string(REGEX REPLACE "([^ ]+)[.]lib" "-l\\1" LIBS_VALUE "${LIBS_VALUE}")
                     set(LIBS_VALUE_NEW "${LIBS_VALUE}")
-                    vcpkg_replace_string("${PKGCONFIG_FILE}" "${LIBS_ENTRY}: ${LIBS_VALUE_OLD}" "${LIBS_ENTRY}: ${LIBS_VALUE_NEW}")
+                    vcpkg_replace_string("${PKGCONFIG_FILE}" "${LIBS_ENTRY}: ${LIBS_VALUE_OLD}" "${LIBS_ENTRY}: ${LIBS_VALUE_NEW}" IGNORE_UNCHANGED)
                 endif()
             endforeach()
         endforeach()
