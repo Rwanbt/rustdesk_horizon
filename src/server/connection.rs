@@ -362,7 +362,10 @@ impl Connection {
     ) {
         // Android is not supported yet, so we always set control_permissions to None.
         #[cfg(target_os = "android")]
-        let control_permissions = { let _ = control_permissions; None };
+        let control_permissions = {
+            let _ = control_permissions;
+            None
+        };
         let _raii_id = raii::ConnectionID::new(id);
         let _raii_control_permissions_id =
             raii::ControlPermissionsID::new(id, &control_permissions);
@@ -3032,7 +3035,9 @@ impl Connection {
                             if let Some(res) = c.text.strip_prefix("#vd_res ") {
                                 let parts: Vec<&str> = res.split('x').collect();
                                 if parts.len() == 2 {
-                                    if let (Ok(w), Ok(h)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+                                    if let (Ok(w), Ok(h)) =
+                                        (parts[0].parse::<u32>(), parts[1].parse::<u32>())
+                                    {
                                         if (640..=7680).contains(&w) && (480..=4320).contains(&h) {
                                             self.virtual_display_resolution = Some((w, h));
                                         }
@@ -3647,14 +3652,18 @@ impl Connection {
                 self.send(make_msg("idd_not_support_under_win10_2004_tip".to_string()))
                     .await;
             } else {
-                let (w, h) = self.virtual_display_resolution.take().unwrap_or((1920, 1080));
+                let (w, h) = self
+                    .virtual_display_resolution
+                    .take()
+                    .unwrap_or((1920, 1080));
+                // Store custom resolution for Amyuni path (reads it in plug_in_monitor)
+                virtual_display_manager::set_custom_resolution(w, h);
                 let modes = vec![virtual_display::MonitorMode {
                     width: w,
                     height: h,
                     sync: 60,
                 }];
-                if let Err(e) = virtual_display_manager::plug_in_monitor(t.display as _, modes)
-                {
+                if let Err(e) = virtual_display_manager::plug_in_monitor(t.display as _, modes) {
                     log::error!("Failed to plug in virtual display: {}", e);
                     self.send(make_msg(format!(
                         "Failed to plug in virtual display: {}",
@@ -3663,8 +3672,6 @@ impl Connection {
                     .await;
                 } else {
                     self.virtual_display_indices.push(t.display);
-                    // For Amyuni IDD, modes are ignored; override resolution after plug-in
-                    virtual_display_manager::set_virtual_display_resolution(w, h);
                 }
             }
         } else {
@@ -5404,9 +5411,8 @@ mod raii {
         }
 
         pub fn check_wake_lock_on_setting_changed() {
-            let current = config::Config::get_bool_option(
-                keys::OPTION_KEEP_AWAKE_DURING_INCOMING_SESSIONS,
-            );
+            let current =
+                config::Config::get_bool_option(keys::OPTION_KEEP_AWAKE_DURING_INCOMING_SESSIONS);
             let cached = *WAKELOCK_KEEP_AWAKE_OPTION.lock().unwrap();
             if cached != Some(current) {
                 Self::check_wake_lock();
