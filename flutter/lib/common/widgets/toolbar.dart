@@ -987,6 +987,10 @@ bool showVirtualDisplayMenu(FFI ffi) {
   if (pi.platform == kPeerPlatformLinux && pi.isEvdi) {
     return true;
   }
+  // macOS with CGVirtualDisplay
+  if (pi.platform == kPeerPlatformMacOS && pi.isCgVirtual) {
+    return true;
+  }
   // Windows with IDD
   if (pi.platform != kPeerPlatformWindows) {
     return false;

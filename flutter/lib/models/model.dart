@@ -4052,6 +4052,8 @@ class PeerInfo with ChangeNotifier {
       platformAdditions[kPlatformAdditionsIddImpl] == 'amyuni_idd';
   bool get isEvdi =>
       platformAdditions[kPlatformAdditionsIddImpl] == 'evdi';
+  bool get isCgVirtual =>
+      platformAdditions[kPlatformAdditionsIddImpl] == 'cgvirtual';
   int get evdiVirtualDisplayCount =>
       platformAdditions[kPlatformAdditionsEvdiVirtualDisplays] ?? 0;
 

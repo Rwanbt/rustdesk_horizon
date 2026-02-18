@@ -2,7 +2,7 @@ use super::*;
 use crate::common::SimpleCallOnReturn;
 #[cfg(target_os = "linux")]
 use crate::platform::linux::is_x11;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use crate::virtual_display_manager;
 #[cfg(windows)]
 use hbb_common::get_version_number;
@@ -189,6 +189,13 @@ fn displays_to_msg(displays: Vec<DisplayInfo>) -> Message {
         pi.platform_additions = serde_json::to_string(&m).unwrap_or_default();
     }
     #[cfg(target_os = "linux")]
+    {
+        let m = crate::virtual_display_manager::get_platform_additions();
+        if !m.is_empty() {
+            pi.platform_additions = serde_json::to_string(&m).unwrap_or_default();
+        }
+    }
+    #[cfg(target_os = "macos")]
     {
         let m = crate::virtual_display_manager::get_platform_additions();
         if !m.is_empty() {
@@ -438,6 +445,20 @@ pub fn try_get_displays() -> ResultType<Vec<Display>> {
             && virtual_display_manager::is_virtual_display_supported()
         {
             log::debug!("no displays on Linux, creating virtual display via EVDI");
+            if let Err(e) = virtual_display_manager::plug_in_headless() {
+                log::error!("plug_in_headless failed: {}", e);
+            } else {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                displays = Display::all()?;
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if displays.is_empty()
+            && virtual_display_manager::is_virtual_display_supported()
+        {
+            log::debug!("no displays on macOS, creating virtual display via CGVirtualDisplay");
             if let Err(e) = virtual_display_manager::plug_in_headless() {
                 log::error!("plug_in_headless failed: {}", e);
             } else {

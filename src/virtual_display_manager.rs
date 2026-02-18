@@ -69,7 +69,11 @@ pub fn is_virtual_display_supported() -> bool {
     {
         return linux_evdi::is_supported();
     }
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        return macos_cg_virtual::is_supported();
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
         false
     }
@@ -88,7 +92,11 @@ pub fn plug_in_headless() -> ResultType<()> {
     {
         return linux_evdi::plug_in_headless();
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        return macos_cg_virtual::plug_in_headless();
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         bail!("Virtual display not supported on this platform.")
     }
@@ -126,7 +134,11 @@ pub fn get_platform_additions() -> serde_json::Map<String, serde_json::Value> {
     {
         return linux_evdi::get_platform_additions();
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        return macos_cg_virtual::get_platform_additions();
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         serde_json::Map::new()
     }
@@ -154,7 +166,11 @@ pub fn plug_in_monitor(idx: u32, modes: Vec<MonitorMode>) -> ResultType<()> {
     {
         return linux_evdi::plug_in_monitor(idx, &modes);
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        return macos_cg_virtual::plug_in_monitor(idx, &modes);
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         let _ = (idx, modes);
         bail!("Virtual display not supported on this platform.")
@@ -182,7 +198,12 @@ pub fn plug_out_monitor(index: i32, force_all: bool, force_one: bool) -> ResultT
         let _ = (force_all, force_one);
         return linux_evdi::plug_out_monitor(index);
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (force_all, force_one);
+        return macos_cg_virtual::plug_out_monitor(index);
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         let _ = (index, force_all, force_one);
         bail!("Virtual display not supported on this platform.")
@@ -217,7 +238,11 @@ pub fn plug_in_peer_request(modes: Vec<Vec<MonitorMode>>) -> ResultType<Vec<u32>
     {
         return linux_evdi::plug_in_peer_request(modes);
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        return macos_cg_virtual::plug_in_peer_request(modes);
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         let _ = modes;
         bail!("Virtual display not supported on this platform.")
@@ -247,7 +272,12 @@ pub fn plug_out_monitor_indices(
         let _ = (force_all, force_one);
         return linux_evdi::plug_out_monitor_indices(indices);
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (force_all, force_one);
+        return macos_cg_virtual::plug_out_monitor_indices(indices);
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         let _ = (indices, force_all, force_one);
         bail!("Virtual display not supported on this platform.")
@@ -267,7 +297,11 @@ pub fn reset_all() -> ResultType<()> {
     {
         return linux_evdi::reset_all();
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        return macos_cg_virtual::reset_all();
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         bail!("Virtual display not supported on this platform.")
     }
@@ -2352,5 +2386,309 @@ pub mod linux_evdi {
         };
         ((width + h_blank) as u64 * (height + v_blank) as u64 * refresh as u64)
             .min(u32::MAX as u64) as u32
+    }
+}
+
+// =============================================================================
+// macOS CGVirtualDisplay implementation
+// =============================================================================
+
+#[cfg(target_os = "macos")]
+pub mod macos_cg_virtual {
+    use hbb_common::{bail, log, ResultType};
+    use objc::rc::autoreleasepool;
+    use objc::runtime::{Class, Object, BOOL, YES};
+    use objc::{class, msg_send, sel, sel_impl};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    type Id = *mut Object;
+
+    #[repr(C)]
+    #[derive(Debug, Copy, Clone)]
+    struct NSOperatingSystemVersion {
+        major: i64,
+        minor: i64,
+        patch: i64,
+    }
+
+    #[repr(C)]
+    #[derive(Debug, Copy, Clone)]
+    struct CGSize {
+        width: f64,
+        height: f64,
+    }
+
+    lazy_static::lazy_static! {
+        static ref MANAGER: Mutex<CgVirtualManager> = Mutex::new(CgVirtualManager::new());
+    }
+
+    struct CgVirtualManager {
+        displays: HashMap<i32, Id>,
+        next_index: i32,
+        headless: Option<i32>,
+    }
+
+    unsafe impl Send for CgVirtualManager {}
+
+    impl CgVirtualManager {
+        fn new() -> Self {
+            Self {
+                displays: HashMap::new(),
+                next_index: 0,
+                headless: None,
+            }
+        }
+    }
+
+    impl Drop for CgVirtualManager {
+        fn drop(&mut self) {
+            for (_idx, display) in self.displays.drain() {
+                unsafe {
+                    let _: () = msg_send![display, release];
+                }
+            }
+        }
+    }
+
+    fn cg_virtual_display_class() -> Option<&'static Class> {
+        Class::get("CGVirtualDisplay")
+    }
+
+    fn cg_virtual_display_descriptor_class() -> Option<&'static Class> {
+        Class::get("CGVirtualDisplayDescriptor")
+    }
+
+    fn cg_virtual_display_settings_class() -> Option<&'static Class> {
+        Class::get("CGVirtualDisplaySettings")
+    }
+
+    fn cg_virtual_display_mode_class() -> Option<&'static Class> {
+        Class::get("CGVirtualDisplayMode")
+    }
+
+    fn is_macos_14_or_later() -> bool {
+        autoreleasepool(|| unsafe {
+            let info: Id = msg_send![class!(NSProcessInfo), processInfo];
+            let version: NSOperatingSystemVersion = msg_send![info, operatingSystemVersion];
+            version.major >= 14
+        })
+    }
+
+    pub fn is_supported() -> bool {
+        if !is_macos_14_or_later() {
+            return false;
+        }
+        cg_virtual_display_class().is_some()
+    }
+
+    fn create_display(width: u32, height: u32) -> ResultType<Id> {
+        autoreleasepool(|| unsafe {
+            let desc_cls = match cg_virtual_display_descriptor_class() {
+                Some(c) => c,
+                None => bail!("CGVirtualDisplayDescriptor class not found"),
+            };
+            let display_cls = match cg_virtual_display_class() {
+                Some(c) => c,
+                None => bail!("CGVirtualDisplay class not found"),
+            };
+            let settings_cls = match cg_virtual_display_settings_class() {
+                Some(c) => c,
+                None => bail!("CGVirtualDisplaySettings class not found"),
+            };
+            let mode_cls = match cg_virtual_display_mode_class() {
+                Some(c) => c,
+                None => bail!("CGVirtualDisplayMode class not found"),
+            };
+
+            // Create descriptor
+            let desc: Id = msg_send![desc_cls, alloc];
+            let desc: Id = msg_send![desc, init];
+
+            // Set display name
+            let name: Id = msg_send![class!(NSString), alloc];
+            let name: Id = msg_send![name, initWithUTF8String: b"Fulldesk Virtual Display\0".as_ptr()];
+            let _: () = msg_send![desc, setName: name];
+
+            // Set max resolution
+            let _: () = msg_send![desc, setMaxPixelsWide: width as u64];
+            let _: () = msg_send![desc, setMaxPixelsHigh: height as u64];
+
+            // Set physical size in mm (approximate 24" display)
+            let size = CGSize {
+                width: (width as f64 / 96.0) * 25.4,
+                height: (height as f64 / 96.0) * 25.4,
+            };
+            let _: () = msg_send![desc, setSizeInMillimeters: size];
+
+            // Create the virtual display
+            let display: Id = msg_send![display_cls, alloc];
+            let display: Id = msg_send![display, initWithDescriptor: desc];
+            if display.is_null() {
+                let _: () = msg_send![desc, release];
+                bail!("Failed to create CGVirtualDisplay");
+            }
+
+            // Create mode
+            let mode: Id = msg_send![mode_cls, alloc];
+            let mode: Id = msg_send![mode, initWithWidth: width as u64
+                                           height: height as u64
+                                           refreshRate: 60.0f64];
+            if mode.is_null() {
+                let _: () = msg_send![display, release];
+                let _: () = msg_send![desc, release];
+                bail!("Failed to create CGVirtualDisplayMode");
+            }
+
+            // Create settings with mode array
+            let settings: Id = msg_send![settings_cls, alloc];
+            let settings: Id = msg_send![settings, init];
+            let modes_array: Id = msg_send![class!(NSArray), arrayWithObject: mode];
+            let _: () = msg_send![settings, setModes: modes_array];
+
+            // Apply settings
+            let success: BOOL = msg_send![display, applySettings: settings];
+            let _: () = msg_send![settings, release];
+            let _: () = msg_send![mode, release];
+            let _: () = msg_send![name, release];
+            let _: () = msg_send![desc, release];
+
+            if success != YES {
+                let _: () = msg_send![display, release];
+                bail!("Failed to apply CGVirtualDisplay settings");
+            }
+
+            Ok(display)
+        })
+    }
+
+    pub fn plug_in_monitor(idx: u32, modes: &[super::MonitorMode]) -> ResultType<()> {
+        let (width, height) = if let Some(res) = super::take_custom_resolution() {
+            res
+        } else if let Some(mode) = modes.first() {
+            (mode.width, mode.height)
+        } else {
+            (1920, 1080)
+        };
+
+        log::info!("macOS VD: creating virtual display {}x{} (idx={})", width, height, idx);
+        let display = create_display(width, height)?;
+
+        let mut manager = MANAGER.lock().unwrap();
+        let index = manager.next_index;
+        manager.displays.insert(index, display);
+        manager.next_index += 1;
+
+        log::info!("macOS VD: virtual display created with index {}", index);
+        Ok(())
+    }
+
+    pub fn plug_out_monitor(index: i32) -> ResultType<()> {
+        let mut manager = MANAGER.lock().unwrap();
+        if index < 0 {
+            // Plug out all
+            for (_idx, display) in manager.displays.drain() {
+                unsafe {
+                    let _: () = msg_send![display, release];
+                }
+            }
+            manager.headless = None;
+            log::info!("macOS VD: all virtual displays removed");
+        } else if let Some(display) = manager.displays.remove(&index) {
+            unsafe {
+                let _: () = msg_send![display, release];
+            }
+            if manager.headless == Some(index) {
+                manager.headless = None;
+            }
+            log::info!("macOS VD: virtual display {} removed", index);
+        } else {
+            bail!("macOS VD: display index {} not found", index);
+        }
+        Ok(())
+    }
+
+    pub fn plug_in_peer_request(
+        modes: Vec<Vec<super::MonitorMode>>,
+    ) -> ResultType<Vec<u32>> {
+        let mut indices = Vec::new();
+        for mode_set in &modes {
+            let (width, height) = if let Some(res) = super::take_custom_resolution() {
+                res
+            } else if let Some(mode) = mode_set.first() {
+                (mode.width, mode.height)
+            } else {
+                (1920, 1080)
+            };
+
+            let display = create_display(width, height)?;
+            let mut manager = MANAGER.lock().unwrap();
+            let index = manager.next_index;
+            manager.displays.insert(index, display);
+            manager.next_index += 1;
+            indices.push(index as u32);
+        }
+        Ok(indices)
+    }
+
+    pub fn plug_out_monitor_indices(indices: &[u32]) -> ResultType<()> {
+        let mut manager = MANAGER.lock().unwrap();
+        for &idx in indices {
+            let idx = idx as i32;
+            if let Some(display) = manager.displays.remove(&idx) {
+                unsafe {
+                    let _: () = msg_send![display, release];
+                }
+                if manager.headless == Some(idx) {
+                    manager.headless = None;
+                }
+                log::info!("macOS VD: virtual display {} removed", idx);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn plug_in_headless() -> ResultType<()> {
+        let display = create_display(1920, 1080)?;
+        let mut manager = MANAGER.lock().unwrap();
+        let index = manager.next_index;
+        manager.displays.insert(index, display);
+        manager.headless = Some(index);
+        manager.next_index += 1;
+        log::info!("macOS VD: headless display created with index {}", index);
+        Ok(())
+    }
+
+    pub fn reset_all() -> ResultType<()> {
+        let mut manager = MANAGER.lock().unwrap();
+        for (_idx, display) in manager.displays.drain() {
+            unsafe {
+                let _: () = msg_send![display, release];
+            }
+        }
+        manager.headless = None;
+        manager.next_index = 0;
+        log::info!("macOS VD: all displays reset");
+        Ok(())
+    }
+
+    pub fn get_platform_additions() -> serde_json::Map<String, serde_json::Value> {
+        let mut map = serde_json::Map::new();
+        if !is_supported() {
+            return map;
+        }
+        map.insert("idd_impl".into(), serde_json::json!("cgvirtual"));
+        let manager = MANAGER.lock().unwrap();
+        let count = manager.displays.len();
+        if count > 0 {
+            map.insert(
+                "cgvirtual_displays".into(),
+                serde_json::json!(count),
+            );
+        }
+        if manager.headless.is_some() {
+            map.insert("cgvirtual_headless".into(), serde_json::json!(true));
+        }
+        map
     }
 }
