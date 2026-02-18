@@ -1017,6 +1017,20 @@ List<Widget> getVirtualDisplayMenuChildren(
             ffi: ffi,
             child: Text(translate('Plug out all')),
           )),
+      Divider(),
+      CkbMenuButton(
+        value: bind.sessionGetToggleOptionSync(
+            sessionId: ffi.sessionId, arg: kOptionAutoVirtualDisplay),
+        onChanged: (bool? value) {
+          if (value != null) {
+            bind.sessionToggleOption(
+                sessionId: ffi.sessionId, value: kOptionAutoVirtualDisplay);
+            clickCallBack?.call();
+          }
+        },
+        child: Text(translate('Auto virtual display on connect')),
+        ffi: ffi,
+      ),
     ];
     return children;
   }
