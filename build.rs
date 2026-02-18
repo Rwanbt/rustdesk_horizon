@@ -71,8 +71,7 @@ fn install_android_deps() {
         "cargo:rustc-link-search={}",
         path.join("lib").to_str().unwrap()
     );
-    println!("cargo:rustc-link-lib=ndk_compat");
-    println!("cargo:rustc-link-lib=oboe");
+    // oboe is linked by the oboe-sys crate (as oboe-ext), no need to link it again
     println!("cargo:rustc-link-lib=c++");
     println!("cargo:rustc-link-lib=OpenSLES");
 }

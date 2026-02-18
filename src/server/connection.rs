@@ -362,7 +362,7 @@ impl Connection {
     ) {
         // Android is not supported yet, so we always set control_permissions to None.
         #[cfg(target_os = "android")]
-        let control_permissions = None;
+        let control_permissions = { let _ = control_permissions; None };
         let _raii_id = raii::ConnectionID::new(id);
         let _raii_control_permissions_id =
             raii::ControlPermissionsID::new(id, &control_permissions);
@@ -870,9 +870,10 @@ impl Connection {
                             #[cfg(target_os = "macos")]
                             conn.retina.set_displays(&_pi.displays);
                         }
-                        Some(message::Union::CursorPosition(pos)) => {
+                        Some(message::Union::CursorPosition(_pos)) => {
                             #[cfg(not(any(target_os = "android", target_os = "ios")))]
                             {
+                                let pos = _pos;
                                 if conn.follow_remote_cursor {
                                     conn.handle_cursor_switch_display(pos.clone()).await;
                                 }
@@ -3223,9 +3224,9 @@ impl Connection {
                         self.refresh_video_display(Some(request.display as usize));
                     }
                 }
-                Some(message::Union::TerminalAction(action)) => {
+                Some(message::Union::TerminalAction(_action)) => {
                     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                    allow_err!(self.handle_terminal_action(action).await);
+                    allow_err!(self.handle_terminal_action(_action).await);
                     #[cfg(any(target_os = "android", target_os = "ios"))]
                     log::warn!("Terminal action received but not supported on this platform");
                 }

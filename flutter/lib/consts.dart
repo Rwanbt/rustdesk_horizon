@@ -364,6 +364,9 @@ const kRemoteViewStyleAdaptive = 'adaptive';
 /// [kRemoteViewStyleCustom] Show remote image at a user-defined scale percent.
 const kRemoteViewStyleCustom = 'custom';
 
+/// [kRemoteViewStyleNative] Show remote image at native aspect ratio.
+const kRemoteViewStyleNative = 'native';
+
 /// [kRemoteScrollStyleAuto] Scroll image auto by position.
 const kRemoteScrollStyleAuto = 'scrollauto';
 

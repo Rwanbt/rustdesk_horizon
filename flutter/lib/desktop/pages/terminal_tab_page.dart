@@ -329,7 +329,7 @@ class _TerminalTabPageState extends State<TerminalTabPage> {
   void _addNewTerminal(String peerId, {int? terminalId}) {
     // Find first tab for this peer to get connection parameters
     final firstTab = tabController.state.value.tabs.firstWhere(
-      (tab) => tab.key.startsWith('$peerId\_'),
+      (tab) => tab.key.startsWith('${peerId}_'),
     );
     if (firstTab.page is TerminalPage) {
       final page = firstTab.page as TerminalPage;
