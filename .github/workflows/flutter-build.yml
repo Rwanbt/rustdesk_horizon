@@ -573,15 +573,22 @@ jobs:
         shell: bash
         run: |
           pushd flutter
-          # flutter build ipa --release --obfuscate --split-debug-info=./split-debug-info --no-codesign
-          # for easy debugging
-          flutter build ipa --release --no-codesign
+          flutter build ios --release --no-codesign
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          cd flutter/build/ios/iphoneos
+          mkdir -p Payload
+          cp -r Runner.app Payload/
+          zip -r fulldesk-${{ env.VERSION }}-${{ matrix.job.arch }}-ios.ipa Payload/
+          ls -lh *.ipa
 
       - name: Upload IPA Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: fulldesk-${{ env.VERSION }}-${{ matrix.job.arch }}-ios.ipa
-          path: flutter/build/ios/ipa/*.ipa
+          path: flutter/build/ios/iphoneos/fulldesk-*.ipa
 
       - name: Publish IPA package
         if: env.UPLOAD_ARTIFACT == 'true'
@@ -590,7 +597,7 @@ jobs:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
           files: |
-            flutter/build/ios/ipa/*.ipa
+            flutter/build/ios/iphoneos/fulldesk-*.ipa
 
 
   build-for-macOS:
