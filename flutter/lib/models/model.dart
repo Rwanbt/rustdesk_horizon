@@ -4056,6 +4056,8 @@ class PeerInfo with ChangeNotifier {
       platformAdditions[kPlatformAdditionsIddImpl] == 'cgvirtual';
   int get evdiVirtualDisplayCount =>
       platformAdditions[kPlatformAdditionsEvdiVirtualDisplays] ?? 0;
+  int get cgVirtualDisplayCount =>
+      platformAdditions['cgvirtual_displays'] ?? 0;
 
   Display? tryGetDisplay({int? display}) {
     if (displays.isEmpty) {

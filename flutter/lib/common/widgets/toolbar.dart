@@ -15,6 +15,171 @@ import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
 import 'package:get/get.dart';
 
+// ── Virtual Display resolution presets ──────────────────────────────────────
+
+class VdResolutionPreset {
+  final String label;
+  final int width;
+  final int height;
+  final String category;
+  const VdResolutionPreset(this.label, this.width, this.height, this.category);
+  String get resolution => '${width}x$height';
+}
+
+const String kVdResolutionAuto = 'auto';
+
+const List<VdResolutionPreset> kVdResolutionPresets = [
+  // Monitors
+  VdResolutionPreset('4K UHD', 3840, 2160, 'Monitor'),
+  VdResolutionPreset('QHD (1440p)', 2560, 1440, 'Monitor'),
+  VdResolutionPreset('Full HD (1080p)', 1920, 1080, 'Monitor'),
+  VdResolutionPreset('WUXGA', 1920, 1200, 'Monitor'),
+  VdResolutionPreset('HD (720p)', 1280, 720, 'Monitor'),
+  // Tablets
+  VdResolutionPreset('iPad Pro 12.9"', 2732, 2048, 'Tablet'),
+  VdResolutionPreset('iPad Pro 11"', 2388, 1668, 'Tablet'),
+  VdResolutionPreset('iPad Air / iPad 10', 2360, 1640, 'Tablet'),
+  VdResolutionPreset('iPad Mini 6', 2266, 1488, 'Tablet'),
+  VdResolutionPreset('Galaxy Tab S9 Ultra', 2800, 1752, 'Tablet'),
+  VdResolutionPreset('Galaxy Tab S9+', 2560, 1600, 'Tablet'),
+  // UltraWide
+  VdResolutionPreset('UltraWide QHD', 3440, 1440, 'UltraWide'),
+];
+
+/// Per-peer selected VD resolution (transient, not persisted).
+final Map<String, String> _vdSelectedResolution = {};
+
+String _getVdResolution(String peerId) =>
+    _vdSelectedResolution[peerId] ?? kVdResolutionAuto;
+
+void _setVdResolution(String peerId, String resolution) {
+  _vdSelectedResolution[peerId] = resolution;
+}
+
+// ── Resolution picker widget ────────────────────────────────────────────────
+
+Widget _buildVdResolutionPicker({
+  required FFI ffi,
+  required String id,
+  VoidCallback? clickCallBack,
+}) {
+  final currentRes = _getVdResolution(id);
+  final currentLabel = currentRes == kVdResolutionAuto
+      ? translate('Auto')
+      : kVdResolutionPresets
+                .where((p) => p.resolution == currentRes)
+                .map((p) => '${p.label} (${p.resolution})')
+                .firstOrNull ??
+            currentRes;
+
+  if (isDesktop || isWebDesktop) {
+    return _buildVdResolutionSubmenuDesktop(
+      id: id,
+      currentRes: currentRes,
+      currentLabel: currentLabel,
+      clickCallBack: clickCallBack,
+    );
+  } else {
+    return _buildVdResolutionExpansionMobile(
+      id: id,
+      currentRes: currentRes,
+      currentLabel: currentLabel,
+      clickCallBack: clickCallBack,
+    );
+  }
+}
+
+Widget _buildVdResolutionSubmenuDesktop({
+  required String id,
+  required String currentRes,
+  required String currentLabel,
+  VoidCallback? clickCallBack,
+}) {
+  final items = <Widget>[];
+
+  // "Auto" option
+  items.add(RadioMenuButton<String>(
+    value: kVdResolutionAuto,
+    groupValue: currentRes,
+    closeOnActivate: true,
+    onChanged: (val) {
+      if (val != null) _setVdResolution(id, val);
+      clickCallBack?.call();
+    },
+    child: Text(translate('Auto')),
+  ));
+
+  // Preset groups
+  String? lastCat;
+  for (final p in kVdResolutionPresets) {
+    if (p.category != lastCat) {
+      items.add(const Divider());
+      lastCat = p.category;
+    }
+    items.add(RadioMenuButton<String>(
+      value: p.resolution,
+      groupValue: currentRes,
+      closeOnActivate: true,
+      onChanged: (val) {
+        if (val != null) _setVdResolution(id, val);
+        clickCallBack?.call();
+      },
+      child: Text('${p.label}  ${p.resolution}'),
+    ));
+  }
+
+  return SubmenuButton(
+    menuChildren: items,
+    child: Text('${translate("Resolution")}: $currentLabel'),
+  );
+}
+
+Widget _buildVdResolutionExpansionMobile({
+  required String id,
+  required String currentRes,
+  required String currentLabel,
+  VoidCallback? clickCallBack,
+}) {
+  final tiles = <Widget>[];
+  tiles.add(RadioListTile<String>(
+    value: kVdResolutionAuto,
+    groupValue: currentRes,
+    title: Text(translate('Auto')),
+    dense: true,
+    onChanged: (val) {
+      if (val != null) _setVdResolution(id, val);
+      clickCallBack?.call();
+    },
+  ));
+  String? lastCat;
+  for (final p in kVdResolutionPresets) {
+    if (p.category != lastCat) {
+      tiles.add(Padding(
+        padding: const EdgeInsets.only(left: 16, top: 8, bottom: 4),
+        child: Text(p.category,
+            style: const TextStyle(fontSize: 12, color: Colors.grey)),
+      ));
+      lastCat = p.category;
+    }
+    tiles.add(RadioListTile<String>(
+      value: p.resolution,
+      groupValue: currentRes,
+      title: Text('${p.label}  ${p.resolution}'),
+      dense: true,
+      onChanged: (val) {
+        if (val != null) _setVdResolution(id, val);
+        clickCallBack?.call();
+      },
+    ));
+  }
+  return ExpansionTile(
+    title: Text('${translate("Resolution")}: $currentLabel'),
+    children: tiles,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 bool isEditOsPassword = false;
 
 class TTextMenu {
@@ -932,6 +1097,7 @@ Future<void> toggleVirtualDisplayWithResolution({
   required SessionID sessionId,
   required int index,
   required bool on,
+  String? peerId,
 }) async {
   if (on && (isAndroid || isIOS)) {
     Size physicalSize = Size.zero;
@@ -977,6 +1143,15 @@ Future<void> toggleVirtualDisplayWithResolution({
     } else {
       debugPrint("VD: WARNING physicalSize is zero, skipping #vd_res");
     }
+  } else if (on && peerId != null) {
+    // Desktop: send resolution from picker if not "auto"
+    final selectedRes = _getVdResolution(peerId);
+    if (selectedRes != kVdResolutionAuto) {
+      debugPrint("VD: sending #vd_res $selectedRes (from picker)");
+      bind.sessionSendChat(
+          sessionId: sessionId, text: "#vd_res $selectedRes");
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
   }
   bind.sessionToggleVirtualDisplay(sessionId: sessionId, index: index, on: on);
 }
@@ -1014,6 +1189,9 @@ List<Widget> getVirtualDisplayMenuChildren(
   if (pi.isEvdi) {
     final count = ffi.ffiModel.pi.evdiVirtualDisplayCount;
     final children = <Widget>[
+      _buildVdResolutionPicker(
+          ffi: ffi, id: id, clickCallBack: clickCallBack),
+      const Divider(),
       Obx(() => Row(
             children: [
               TextButton(
@@ -1032,7 +1210,10 @@ List<Widget> getVirtualDisplayMenuChildren(
                     ? null
                     : () async {
                         await toggleVirtualDisplayWithResolution(
-                            sessionId: ffi.sessionId, index: 0, on: true);
+                            sessionId: ffi.sessionId,
+                            index: 0,
+                            on: true,
+                            peerId: id);
                         clickCallBack?.call();
                       },
                 child: Icon(Icons.add),
@@ -1072,7 +1253,11 @@ List<Widget> getVirtualDisplayMenuChildren(
   }
   if (pi.isRustDeskIdd) {
     final virtualDisplays = ffi.ffiModel.pi.RustDeskVirtualDisplays;
-    final children = <Widget>[];
+    final children = <Widget>[
+      _buildVdResolutionPicker(
+          ffi: ffi, id: id, clickCallBack: clickCallBack),
+      const Divider(),
+    ];
     for (var i = 0; i < kMaxVirtualDisplayCount; i++) {
       children.add(Obx(() => CkbMenuButton(
             value: virtualDisplays.contains(i + 1),
@@ -1081,7 +1266,10 @@ List<Widget> getVirtualDisplayMenuChildren(
                 : (bool? value) async {
                     if (value != null) {
                       await toggleVirtualDisplayWithResolution(
-                          sessionId: ffi.sessionId, index: i + 1, on: value);
+                          sessionId: ffi.sessionId,
+                          index: i + 1,
+                          on: value,
+                          peerId: id);
                       clickCallBack?.call();
                     }
                   },
@@ -1108,6 +1296,9 @@ List<Widget> getVirtualDisplayMenuChildren(
   if (pi.isAmyuniIdd) {
     final count = ffi.ffiModel.pi.amyuniVirtualDisplayCount;
     final children = <Widget>[
+      _buildVdResolutionPicker(
+          ffi: ffi, id: id, clickCallBack: clickCallBack),
+      const Divider(),
       Obx(() => Row(
             children: [
               TextButton(
@@ -1126,9 +1317,78 @@ List<Widget> getVirtualDisplayMenuChildren(
                     ? null
                     : () async {
                         await toggleVirtualDisplayWithResolution(
-                            sessionId: ffi.sessionId, index: 0, on: true);
+                            sessionId: ffi.sessionId,
+                            index: 0,
+                            on: true,
+                            peerId: id);
                         clickCallBack?.call();
                       },
+                child: Icon(Icons.add),
+              ),
+            ],
+          )),
+      Divider(),
+      Obx(() => MenuButton(
+            onPressed: privacyModeState.isNotEmpty || count == 0
+                ? null
+                : () {
+                    bind.sessionToggleVirtualDisplay(
+                        sessionId: ffi.sessionId,
+                        index: kAllVirtualDisplay,
+                        on: false);
+                    clickCallBack?.call();
+                  },
+            ffi: ffi,
+            child: Text(translate('Plug out all')),
+          )),
+      Divider(),
+      CkbMenuButton(
+        value: bind.sessionGetToggleOptionSync(
+            sessionId: ffi.sessionId, arg: kOptionAutoVirtualDisplay),
+        onChanged: (bool? value) {
+          if (value != null) {
+            bind.sessionToggleOption(
+                sessionId: ffi.sessionId, value: kOptionAutoVirtualDisplay);
+            clickCallBack?.call();
+          }
+        },
+        child: Text(translate('Auto virtual display on connect')),
+        ffi: ffi,
+      ),
+    ];
+    return children;
+  }
+  if (pi.isCgVirtual) {
+    final count = ffi.ffiModel.pi.cgVirtualDisplayCount;
+    final children = <Widget>[
+      _buildVdResolutionPicker(
+          ffi: ffi, id: id, clickCallBack: clickCallBack),
+      const Divider(),
+      Obx(() => Row(
+            children: [
+              TextButton(
+                onPressed: privacyModeState.isNotEmpty || count == 0
+                    ? null
+                    : () {
+                        bind.sessionToggleVirtualDisplay(
+                            sessionId: ffi.sessionId, index: 0, on: false);
+                        clickCallBack?.call();
+                      },
+                child: Icon(Icons.remove),
+              ),
+              Text(count.toString()),
+              TextButton(
+                onPressed:
+                    privacyModeState.isNotEmpty || count == kMaxVirtualDisplayCount
+                        ? null
+                        : () async {
+                            await toggleVirtualDisplayWithResolution(
+                                sessionId: ffi.sessionId,
+                                index: 0,
+                                on: true,
+                                peerId: id);
+                            clickCallBack?.call();
+                          },
                 child: Icon(Icons.add),
               ),
             ],

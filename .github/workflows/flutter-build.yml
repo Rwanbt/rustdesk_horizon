@@ -318,7 +318,7 @@ jobs:
             ### iOS
             | File | Description |
             |------|-------------|
-            | `liblibrustdesk.a` | Library only (IPA not available yet) |
+            | `fulldesk-*.ipa` | Unsigned IPA (re-sign with your Apple Developer cert) |
           files: |
             ./SignOutput/fulldesk-*.msi
             ./SignOutput/fulldesk-*.exe
@@ -577,21 +577,20 @@ jobs:
           # for easy debugging
           flutter build ipa --release --no-codesign
 
-      # - name: Upload Artifacts
-      #   # if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: fulldesk-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
-      #     path: flutter/build/ios/ipa/*.ipa
+      - name: Upload IPA Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fulldesk-${{ env.VERSION }}-${{ matrix.job.arch }}-ios.ipa
+          path: flutter/build/ios/ipa/*.ipa
 
-      # - name: Publish ipa package
-      #   # if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'
-      #   uses: softprops/action-gh-release@v1
-      #   with:
-      #     prerelease: true
-      #     tag_name: ${{ env.TAG_NAME }}
-      #     files: |
-      #       flutter/build/ios/ipa/*.ipa
+      - name: Publish IPA package
+        if: env.UPLOAD_ARTIFACT == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          prerelease: true
+          tag_name: ${{ env.TAG_NAME }}
+          files: |
+            flutter/build/ios/ipa/*.ipa
 
 
   build-for-macOS:
