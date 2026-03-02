@@ -575,10 +575,16 @@ jobs:
           pushd flutter
           flutter build ios --release --no-codesign
 
-      - name: Package unsigned IPA
+      - name: Ad-hoc sign and package IPA
         shell: bash
         run: |
           cd flutter/build/ios/iphoneos
+          # Ad-hoc sign all frameworks first, then the app itself.
+          # SideStore/AltStore need a valid _CodeSignature structure to re-sign.
+          find Runner.app/Frameworks -name '*.framework' -exec codesign --force --sign - --timestamp=none {} \;
+          find Runner.app/Frameworks -name '*.dylib' -exec codesign --force --sign - --timestamp=none {} \;
+          codesign --force --sign - --timestamp=none Runner.app
+          # Package as IPA
           mkdir -p Payload
           cp -r Runner.app Payload/
           zip -r fulldesk-${{ env.VERSION }}-${{ matrix.job.arch }}-ios.ipa Payload/
