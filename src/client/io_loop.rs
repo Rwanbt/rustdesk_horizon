@@ -1088,10 +1088,19 @@ impl<T: InvokeUiSession> Remote<T> {
         if !self.peer_info.is_support_virtual_display() {
             return;
         }
-        let lc = self.handler.lc.read().unwrap();
-        let displays = lc.get_option("virtual-display");
+        let displays = {
+            let lc = self.handler.lc.read().unwrap();
+            lc.get_option("virtual-display")
+        };
+        // Deduplicate indices to prevent sending N identical toggle messages
+        // when the "virtual-display" option accumulated duplicate "0" entries
+        // from previous sessions (e.g. "0,0,0,0" → just one toggle with index=0).
+        let mut seen = std::collections::HashSet::new();
         for d in displays.split(',') {
             if let Ok(index) = d.parse::<i32>() {
+                if !seen.insert(index) {
+                    continue; // skip duplicate index
+                }
                 let mut misc = Misc::new();
                 misc.set_toggle_virtual_display(ToggleVirtualDisplay {
                     display: index,
@@ -1102,6 +1111,14 @@ impl<T: InvokeUiSession> Remote<T> {
                 msg_out.set_misc(misc);
                 allow_err!(peer.send(&msg_out).await);
             }
+        }
+        // Clear stale saved state after replay. Virtual displays are per-session
+        // (destroyed on disconnect) so the saved option is only useful for one
+        // reconnect attempt. Without clearing, "0" entries accumulate across
+        // sessions and cause multiple unwanted auto-creations.
+        if !displays.is_empty() {
+            let mut lc = self.handler.lc.write().unwrap();
+            lc.set_option("virtual-display".to_string(), "".to_string());
         }
     }
 

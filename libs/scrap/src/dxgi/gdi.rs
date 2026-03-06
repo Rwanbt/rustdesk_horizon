@@ -29,6 +29,7 @@ pub struct CapturerGDI {
     bmp: HBITMAP,
     width: i32,
     height: i32,
+    raster_op: u32,
 }
 
 impl CapturerGDI {
@@ -83,8 +84,15 @@ impl CapturerGDI {
                 bmp,
                 width,
                 height,
+                raster_op: SRCCOPY | CAPTUREBLT,
             })
         }
+    }
+
+    /// Disable CAPTUREBLT to avoid cursor flickering.
+    /// Trade-off: layered (transparent) windows won't be captured.
+    pub fn set_no_captureblt(&mut self) {
+        self.raster_op = SRCCOPY;
     }
 
     pub fn frame(&self, data: &mut Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
@@ -98,7 +106,7 @@ impl CapturerGDI {
                 self.screen_dc,
                 0,
                 0,
-                SRCCOPY | CAPTUREBLT, // CAPTUREBLT enable layered window but also make cursor blinking
+                self.raster_op,
             );
             if res == 0 {
                 return Err("Failed to copy screen to Windows buffer".into());

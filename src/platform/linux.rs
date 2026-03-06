@@ -846,7 +846,12 @@ pub fn start_os_service() {
     start_uinput_service();
     // Prepare EVDI at service start (runs as root, no sudo prompt needed)
     prepare_evdi();
+    // reload_evdi_lib MUST come before cleanup: cleanup needs library
+    // function pointers (evdi_open/disconnect/close) to safely tear
+    // down orphaned devices one at a time.
     crate::virtual_display_manager::linux_evdi::reload_evdi_lib();
+    // Clean up any orphaned EVDI devices from previous crashed sessions
+    crate::virtual_display_manager::linux_evdi::cleanup_orphaned_evdi_devices();
     crate::virtual_display_manager::linux_evdi::mark_prepare_done();
 
     std::thread::spawn(|| {

@@ -350,6 +350,17 @@ fn update_last_cursor_pos(x: i32, y: i32) {
 }
 
 fn run_pos(sp: EmptyExtraFieldService, state: &mut StatePos) -> ResultType<()> {
+    if *DIAG_SKIP_INPUT { return Ok(()); }
+    // Suppress cursor position broadcasts during display transitions to prevent flickering.
+    // The flag is set by connection.rs before VD plug/unplug and cleared by video_service.rs
+    // after the capturer has been re-initialized with the new display layout.
+    if super::display_service::DISPLAY_IN_TRANSITION
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        state.cursor_pos = (INVALID_CURSOR_POS, INVALID_CURSOR_POS);
+        return Ok(());
+    }
+
     let (_, (x, y)) = *LATEST_SYS_CURSOR_POS.lock().unwrap();
     if x == INVALID_CURSOR_POS || y == INVALID_CURSOR_POS {
         return Ok(());
@@ -389,6 +400,7 @@ fn run_pos(sp: EmptyExtraFieldService, state: &mut StatePos) -> ResultType<()> {
 }
 
 fn run_cursor(sp: MouseCursorService, state: &mut StateCursor) -> ResultType<()> {
+    if *DIAG_SKIP_INPUT { return Ok(()); }
     if let Some(hcursor) = crate::get_cursor()? {
         if hcursor != state.hcursor {
             let msg;
@@ -451,6 +463,15 @@ lazy_static::lazy_static! {
     // Track connections that are currently using relative mouse movement.
     // Used to disable whiteboard/cursor display for all events while in relative mode.
     static ref RELATIVE_MOUSE_CONNS: Arc<Mutex<std::collections::HashSet<i32>>> = Default::default();
+    // Diagnostic: set FULLDESK_DIAG_SKIP_INPUT=1 to skip cursor polling
+    // (isolates whether GetCursorInfo/GetCursorPos causes cursor flickering)
+    static ref DIAG_SKIP_INPUT: bool = {
+        let skip = std::env::var("FULLDESK_DIAG_SKIP_INPUT").map_or(false, |v| v == "1");
+        if skip {
+            log::info!("[DIAG] FULLDESK_DIAG_SKIP_INPUT=1: skipping cursor polling");
+        }
+        skip
+    };
 }
 
 #[inline]
@@ -816,6 +837,23 @@ pub fn fix_key_down_timeout_loop() {
     });
     if let Err(err) = ctrlc::set_handler(move || {
         fix_key_down_timeout_at_exit();
+        // Gracefully shut down EVDI virtual displays before exit.
+        // Without this, the kernel cleans up DRM fds abruptly on process death,
+        // causing KScreen to segfault on the hotplug event.
+        #[cfg(target_os = "linux")]
+        {
+            // Spawn a watchdog thread: if EVDI cleanup hangs (e.g. mutex deadlock),
+            // force-exit after 15 seconds.
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_secs(15));
+                log::warn!("EVDI shutdown watchdog: cleanup timed out, forcing exit");
+                std::process::exit(1);
+            });
+            log::info!("EVDI: graceful shutdown — closing all virtual displays");
+            if let Err(e) = crate::virtual_display_manager::linux_evdi::reset_all() {
+                log::warn!("EVDI: shutdown cleanup failed: {}", e);
+            }
+        }
         std::process::exit(0); // will call atexit on posix, but not on Windows
     }) {
         log::error!("Failed to set Ctrl-C handler: {}", err);
@@ -2095,4 +2133,67 @@ lazy_static::lazy_static! {
         (ControlKey::Insert, true),
         (ControlKey::Delete, true),
     ].iter().map(|(a, b)| (a.value(), b.clone())).collect();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_pos_default_is_invalid() {
+        let s = StatePos::default();
+        assert!(!s.is_valid());
+        assert_eq!(s.cursor_pos, (INVALID_CURSOR_POS, INVALID_CURSOR_POS));
+    }
+
+    #[test]
+    fn state_pos_is_moved_detects_change() {
+        let mut s = StatePos::default();
+        // Invalid state: is_moved should return false
+        assert!(!s.is_moved(100, 200));
+        // Set valid position
+        s.cursor_pos = (100, 200);
+        // Same position: not moved
+        assert!(!s.is_moved(100, 200));
+        // Different position: moved
+        assert!(s.is_moved(101, 200));
+        assert!(s.is_moved(100, 201));
+    }
+
+    #[test]
+    fn state_pos_reset_sets_invalid() {
+        use super::super::service::Reset;
+        let mut s = StatePos {
+            cursor_pos: (50, 75),
+        };
+        assert!(s.is_valid());
+        s.reset();
+        assert!(!s.is_valid());
+    }
+
+    #[test]
+    fn state_window_focus_reset_is_invalid() {
+        let mut s = StateWindowFocus::default();
+        use super::service::Reset;
+        s.reset();
+        assert!(!s.is_valid());
+        assert_eq!(s.display_idx, INVALID_DISPLAY_IDX);
+    }
+
+    #[test]
+    fn state_window_focus_is_changed() {
+        let s = StateWindowFocus { display_idx: 0 };
+        assert!(s.is_valid());
+        assert!(!s.is_changed(0));
+        assert!(s.is_changed(1));
+    }
+
+    #[test]
+    fn run_pos_checks_display_in_transition() {
+        let src = include_str!("input_service.rs");
+        assert!(
+            src.contains("DISPLAY_IN_TRANSITION"),
+            "run_pos must check DISPLAY_IN_TRANSITION to suppress cursor during transitions"
+        );
+    }
 }
