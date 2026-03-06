@@ -57,6 +57,10 @@ impl TraitCapturer for Capturer {
         self.inner.set_gdi()
     }
 
+    fn cancel_captureblt(&mut self) {
+        self.inner.cancel_captureblt();
+    }
+
     #[cfg(feature = "vram")]
     fn device(&self) -> AdapterDevice {
         self.inner.device()
