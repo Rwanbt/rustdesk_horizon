@@ -3,8 +3,11 @@
 set -e
 
 case $1 in
-    purge)
+    purge|remove)
 		rm -rf /root/.config/rustdesk || true
+		rm -f /usr/share/X11/xorg.conf.d/15-evdi.conf || true
+		rm -f /etc/modules-load.d/evdi.conf || true
+		rm -f /etc/udev/rules.d/99-evdi.rules || true
         ;;
 esac
 

@@ -401,6 +401,7 @@ pub(super) fn get_capturer_for_display(
                 privacy_mode_id: 0,
                 _capturer_privacy_mode_id: 0,
                 capturer: Box::new(cap_display_info.capturer.clone()),
+                is_virtual_display: false,
             })
         }
     } else {

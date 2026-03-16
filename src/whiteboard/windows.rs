@@ -5,7 +5,7 @@ use super::{
 };
 use hbb_common::{anyhow::anyhow, log, ResultType};
 use softbuffer::{Context, Surface};
-use std::{collections::HashMap, num::NonZeroU32, sync::Arc, time::Instant};
+use std::{collections::HashMap, num::NonZeroU32, sync::Arc, time::{Duration, Instant}};
 use tao::{
     dpi::{PhysicalPosition, PhysicalSize},
     event::{Event, WindowEvent},
@@ -72,9 +72,18 @@ pub(super) fn create_event_loop() -> ResultType<()> {
     let mut ripples: Vec<Ripple> = Vec::new();
     let mut last_cursors: HashMap<String, Cursor> = HashMap::new();
     let mut resized = final_size.is_none();
+    let mut needs_redraw = false;
+    // ~60fps for ripple animations; no redraws when idle
+    let ripple_frame_duration = Duration::from_millis(16);
 
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Poll;
+        // Default: block until an event arrives (no idle CPU burn).
+        // When ripple animations are active, use WaitUntil for ~60fps updates.
+        *control_flow = if !ripples.is_empty() {
+            ControlFlow::WaitUntil(Instant::now() + ripple_frame_duration)
+        } else {
+            ControlFlow::Wait
+        };
 
         match event {
             Event::WindowEvent { event, .. } => match event {
@@ -205,8 +214,18 @@ pub(super) fn create_event_loop() -> ResultType<()> {
                     return;
                 }
             }
+            Event::NewEvents(_) => {
+                // When ripple animations are active, request continuous redraws at ~60fps.
+                if !ripples.is_empty() {
+                    needs_redraw = true;
+                }
+            }
             Event::MainEventsCleared => {
-                window.request_redraw();
+                // Only redraw when something actually changed, not every loop iteration.
+                if needs_redraw {
+                    needs_redraw = false;
+                    window.request_redraw();
+                }
             }
             Event::UserEvent((k, evt)) => match evt {
                 CustomEvent::Cursor(cursor) => {
@@ -218,6 +237,7 @@ pub(super) fn create_event_loop() -> ResultType<()> {
                         });
                     }
                     last_cursors.insert(k, cursor);
+                    needs_redraw = true;
                 }
                 CustomEvent::Exit => {
                     *control_flow = ControlFlow::Exit;

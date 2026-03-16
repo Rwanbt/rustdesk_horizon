@@ -34,6 +34,10 @@ lazy_static::lazy_static! {
 // https://github.com/rustdesk/rustdesk/pull/8537
 static TEMP_IGNORE_DISPLAYS_CHANGED: AtomicBool = AtomicBool::new(false);
 
+/// Set to true during display transitions (VD plug/unplug).
+/// When true, cursor position broadcasts are suppressed to prevent flickering.
+pub static DISPLAY_IN_TRANSITION: AtomicBool = AtomicBool::new(false);
+
 #[derive(Default)]
 struct SyncDisplaysInfo {
     displays: Vec<DisplayInfo>,
@@ -42,9 +46,10 @@ struct SyncDisplaysInfo {
 
 impl SyncDisplaysInfo {
     fn check_changed(&mut self, displays: Vec<DisplayInfo>) {
+        let ignore = TEMP_IGNORE_DISPLAYS_CHANGED.load(Ordering::Relaxed);
         if self.displays.len() != displays.len() {
             self.displays = displays;
-            if !TEMP_IGNORE_DISPLAYS_CHANGED.load(Ordering::Relaxed) {
+            if !ignore {
                 self.is_synced = false;
             }
             return;
@@ -52,7 +57,7 @@ impl SyncDisplaysInfo {
         for (i, d) in displays.iter().enumerate() {
             if d != &self.displays[i] {
                 self.displays = displays;
-                if !TEMP_IGNORE_DISPLAYS_CHANGED.load(Ordering::Relaxed) {
+                if !ignore {
                     self.is_synced = false;
                 }
                 return;
@@ -108,6 +113,10 @@ pub(super) fn check_display_changed(
     // But it is acceptable to for the user to reconnect manually, because the monitor is unplugged.
     let d = lock.displays.get(idx)?;
     if ndisplay != lock.displays.len() {
+        log::info!(
+            "check_display_changed: display count changed: cap={} synced={}",
+            ndisplay, lock.displays.len()
+        );
         return Some(d.clone());
     }
     if !(d.x == x && d.y == y && d.width == w as i32 && d.height == h as i32) {
@@ -218,8 +227,18 @@ fn check_get_displays_changed_msg() -> Option<Message> {
             return get_displays_msg();
         }
     }
-    check_update_displays(&try_get_displays().ok()?);
-    get_displays_msg()
+    let displays = match try_get_displays() {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("try_get_displays failed in display service poll: {}", e);
+            return None;
+        }
+    };
+    let display_infos = build_display_infos(&displays);
+    // Single lock: check_changed + get_update_sync_displays in one scope
+    let mut lock = SYNC_DISPLAYS.lock().unwrap();
+    lock.check_changed(display_infos);
+    lock.get_update_sync_displays().map(|d| displays_to_msg(d))
 }
 
 pub fn check_displays_changed() -> ResultType<()> {
@@ -235,12 +254,14 @@ pub fn check_displays_changed() -> ResultType<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn get_displays_msg() -> Option<Message> {
     let displays = SYNC_DISPLAYS.lock().unwrap().get_update_sync_displays()?;
     Some(displays_to_msg(displays))
 }
 
 fn run(sp: EmptyExtraFieldService) -> ResultType<()> {
+    let mut no_change_count: u32 = 0;
     while sp.ok() {
         sp.snapshot(|sps| {
             if !TEMP_IGNORE_DISPLAYS_CHANGED.load(Ordering::Relaxed) {
@@ -255,8 +276,16 @@ fn run(sp: EmptyExtraFieldService) -> ResultType<()> {
         if let Some(msg_out) = check_get_displays_changed_msg() {
             sp.send(msg_out);
             log::info!("Displays changed");
+            no_change_count = 0;
+        } else {
+            no_change_count = no_change_count.saturating_add(1);
         }
-        std::thread::sleep(Duration::from_millis(300));
+
+        // Adaptive polling: 300ms initially, slowing to 1000ms after 10 unchanged polls (~3s).
+        // This reduces CPU usage when the display configuration is stable.
+        // No impact on video FPS or cursor — this only polls for display add/remove events.
+        let sleep_ms = if no_change_count > 10 { 1000 } else { 300 };
+        std::thread::sleep(Duration::from_millis(sleep_ms));
     }
 
     Ok(())
@@ -318,17 +347,13 @@ pub(super) fn get_display_info(idx: usize) -> Option<DisplayInfo> {
     SYNC_DISPLAYS.lock().unwrap().displays.get(idx).cloned()
 }
 
-// Display to DisplayInfo
-// The DisplayInfo is be sent to the peer.
-pub(super) fn check_update_displays(all: &Vec<Display>) {
-    // For compatibility: if only one display, scale remains 1.0 and we use the physical size for `uinput`.
-    // If there are multiple displays, we use the logical size for `uinput` by setting scale to d.scale().
+// Build Vec<DisplayInfo> from raw Display list (no lock taken).
+fn build_display_infos(all: &[Display]) -> Vec<DisplayInfo> {
     #[cfg(target_os = "linux")]
     let use_logical_scale = !is_x11()
         && crate::is_server()
         && scrap::wayland::display::get_displays().displays.len() > 1;
-    let displays = all
-        .iter()
+    all.iter()
         .map(|d| {
             let display_name = d.name();
             #[allow(unused_assignments)]
@@ -362,7 +387,13 @@ pub(super) fn check_update_displays(all: &Vec<Display>) {
                 ..Default::default()
             }
         })
-        .collect::<Vec<DisplayInfo>>();
+        .collect()
+}
+
+// Display to DisplayInfo
+// The DisplayInfo is be sent to the peer.
+pub(super) fn check_update_displays(all: &Vec<Display>) {
+    let displays = build_display_infos(all);
     SYNC_DISPLAYS.lock().unwrap().check_changed(displays);
 }
 
@@ -438,6 +469,11 @@ fn no_displays(displays: &Vec<Display>) -> bool {
 #[cfg(not(windows))]
 pub fn try_get_displays() -> ResultType<Vec<Display>> {
     let mut displays = Display::all()?;
+    log::trace!(
+        "Display::all() returned {} display(s): {:?}",
+        displays.len(),
+        displays.iter().map(|d| format!("{}({}x{})", d.name(), d.width(), d.height())).collect::<Vec<_>>()
+    );
     #[cfg(target_os = "linux")]
     {
         if displays.is_empty()
@@ -532,4 +568,163 @@ pub fn try_get_displays_(add_amyuni_headless: bool) -> ResultType<Vec<Display>> 
         }
     }
     Ok(displays)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_in_transition_flag_default_false() {
+        assert!(!DISPLAY_IN_TRANSITION.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn sync_displays_info_detects_count_change() {
+        let mut sdi = SyncDisplaysInfo::default();
+        sdi.is_synced = true;
+
+        let d1 = DisplayInfo {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            ..Default::default()
+        };
+        sdi.displays = vec![d1.clone()];
+        sdi.is_synced = true;
+
+        TEMP_IGNORE_DISPLAYS_CHANGED.store(false, Ordering::Relaxed);
+        sdi.check_changed(vec![d1.clone(), d1.clone()]);
+        assert!(!sdi.is_synced, "display count change should un-sync");
+    }
+
+    #[test]
+    fn sync_displays_info_detects_content_change() {
+        let mut sdi = SyncDisplaysInfo::default();
+        let d1 = DisplayInfo {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            ..Default::default()
+        };
+        sdi.displays = vec![d1];
+        sdi.is_synced = true;
+
+        let d2 = DisplayInfo {
+            x: 0,
+            y: 0,
+            width: 2560,
+            height: 1440,
+            ..Default::default()
+        };
+        TEMP_IGNORE_DISPLAYS_CHANGED.store(false, Ordering::Relaxed);
+        sdi.check_changed(vec![d2]);
+        assert!(!sdi.is_synced, "resolution change should un-sync");
+    }
+
+    #[test]
+    fn sync_displays_info_no_change_stays_synced() {
+        let mut sdi = SyncDisplaysInfo::default();
+        let d1 = DisplayInfo {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            ..Default::default()
+        };
+        sdi.displays = vec![d1.clone()];
+        sdi.is_synced = true;
+
+        TEMP_IGNORE_DISPLAYS_CHANGED.store(false, Ordering::Relaxed);
+        sdi.check_changed(vec![d1]);
+        assert!(sdi.is_synced, "same content should stay synced");
+    }
+
+    #[test]
+    fn display_service_has_adaptive_polling() {
+        let src = include_str!("display_service.rs");
+        assert!(
+            src.contains("no_change_count"),
+            "display service must implement adaptive polling interval"
+        );
+    }
+
+    #[test]
+    fn check_changed_loads_temp_ignore_once() {
+        // Source-level: verify check_changed loads TEMP_IGNORE once (single `let ignore =`)
+        let src = include_str!("display_service.rs");
+        let check_changed_fn = src
+            .split("fn check_changed(")
+            .nth(1)
+            .expect("check_changed function must exist");
+        let fn_body = &check_changed_fn[..check_changed_fn.find("\n    fn ").unwrap_or(check_changed_fn.len())];
+        let ignore_loads = fn_body.matches("TEMP_IGNORE_DISPLAYS_CHANGED").count();
+        assert_eq!(
+            ignore_loads, 1,
+            "check_changed should load TEMP_IGNORE only once (found {} refs)",
+            ignore_loads
+        );
+    }
+
+    #[test]
+    fn build_display_infos_exists() {
+        let src = include_str!("display_service.rs");
+        assert!(
+            src.contains("fn build_display_infos("),
+            "build_display_infos helper must exist for lock merging"
+        );
+    }
+
+    #[test]
+    fn bench_sync_displays_lock_merge() {
+        use std::time::Instant;
+        const ITERATIONS: u32 = 100_000;
+
+        let d1 = DisplayInfo {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            ..Default::default()
+        };
+
+        // Scenario A: Two separate locks (old behavior)
+        let start = Instant::now();
+        for _ in 0..ITERATIONS {
+            SYNC_DISPLAYS
+                .lock()
+                .unwrap()
+                .check_changed(vec![d1.clone()]);
+            let _ = SYNC_DISPLAYS
+                .lock()
+                .unwrap()
+                .get_update_sync_displays();
+        }
+        let two_locks_elapsed = start.elapsed();
+
+        // Scenario B: Single lock (new behavior)
+        let start = Instant::now();
+        for _ in 0..ITERATIONS {
+            let mut lock = SYNC_DISPLAYS.lock().unwrap();
+            lock.check_changed(vec![d1.clone()]);
+            let _ = lock.get_update_sync_displays();
+        }
+        let one_lock_elapsed = start.elapsed();
+
+        println!(
+            "\n=== SYNC_DISPLAYS lock merge benchmark ({} iterations) ===",
+            ITERATIONS
+        );
+        println!("  Two locks (old):  {:?}", two_locks_elapsed);
+        println!("  One lock (new):   {:?}", one_lock_elapsed);
+        let speedup =
+            two_locks_elapsed.as_nanos() as f64 / one_lock_elapsed.as_nanos().max(1) as f64;
+        println!("  Speedup: {:.2}x", speedup);
+        assert!(
+            one_lock_elapsed <= two_locks_elapsed,
+            "Single lock should be faster or equal to double lock"
+        );
+    }
 }

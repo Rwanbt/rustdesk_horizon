@@ -147,10 +147,21 @@ impl EncoderApi for VpxEncoder {
                         1 as c_int
                     ));
 
+                    // Scale tile columns based on width (Google recommendation).
+                    // More columns = more parallelism but less efficiency per tile.
+                    let tile_columns: c_int = if config.width <= 640 {
+                        1 // 2 tile columns
+                    } else if config.width <= 1280 {
+                        2 // 4 tile columns
+                    } else if config.width <= 2560 {
+                        3 // 8 tile columns
+                    } else {
+                        4 // 16 tile columns
+                    };
                     call_vpx!(vpx_codec_control_(
                         &mut ctx,
                         VP9E_SET_TILE_COLUMNS as _,
-                        4 as c_int
+                        tile_columns
                     ));
                 } else if config.codec == VpxVideoCodecId::VP8 {
                     // https://github.com/webmproject/libvpx/blob/972149cafeb71d6f08df89e91a0130d6a38c4b15/vpx/vp8cx.h#L172
@@ -228,6 +239,17 @@ impl EncoderApi for VpxEncoder {
     }
 
     fn disable(&self) {}
+
+    fn set_cpuused(&mut self, speed: u32) -> ResultType<()> {
+        if self.id == VpxVideoCodecId::VP9 {
+            call_vpx!(vpx_codec_control_(
+                &mut self.ctx,
+                VP8E_SET_CPUUSED as _,
+                speed as c_int
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl VpxEncoder {

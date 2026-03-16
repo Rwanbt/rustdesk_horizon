@@ -210,6 +210,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     if (!showVirtualDisplayMenu(gFFI)) return;
     final autoVd = bind.sessionGetToggleOptionSync(
         sessionId: gFFI.sessionId, arg: kOptionAutoVirtualDisplay);
+    debugPrint("VD auto-add check: autoVd=$autoVd for peer=${widget.id}");
     if (!autoVd) return;
     await toggleVirtualDisplayWithResolution(
         sessionId: gFFI.sessionId, index: 0, on: true);

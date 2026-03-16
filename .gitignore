@@ -66,3 +66,6 @@ rustc-ice-*.txt
 build_apk.bat
 read_service_logs.ps1
 search_logs.ps1
+diag_test.bat
+# Analysis docs
+fulldesk-evdi-analysis.md

@@ -327,8 +327,8 @@ jobs:
   build-for-windows-sciter:
     name: ${{ matrix.job.target }} (${{ matrix.job.os }})
     runs-on: ${{ matrix.job.os }}
-    # Temporarily disable this action due to additional test is needed.
-    # if: false
+    # Sciter UI is deprecated — Flutter is the only supported UI.
+    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -823,7 +823,6 @@ jobs:
     needs:
       - build-for-macOS
       - build-for-windows-flutter
-      - build-for-windows-sciter
     runs-on: ubuntu-latest
     if: ${{ inputs.upload-artifact }}
     steps:
@@ -1658,7 +1657,7 @@ jobs:
         with:
           packages:
           scripts: |
-            cd res && HBB=`pwd`/.. FLUTTER=1 makepkg -f
+            cd res && HBB=`pwd`/.. FLUTTER=1 makepkg -f --nodeps
 
       - name: Publish archlinux package
         if: matrix.job.arch == 'x86_64' && env.UPLOAD_ARTIFACT == 'true'
@@ -1670,7 +1669,7 @@ jobs:
             res/fulldesk-${{ env.VERSION }}*.zst
 
   build-fulldesk-linux-sciter:
-    if: ${{ inputs.upload-artifact }}
+    if: false # Sciter UI is deprecated — Flutter is the only supported UI.
     runs-on: ${{ matrix.job.on }}
     name: build fulldesk linux sciter ${{ matrix.job.target }}
     strategy:
@@ -1950,7 +1949,6 @@ jobs:
     name: Build flatpak ${{ matrix.job.target }}${{ matrix.job.suffix }}
     needs:
       - build-fulldesk-linux
-      - build-fulldesk-linux-sciter
     runs-on: ${{ matrix.job.on }}
     if: ${{ inputs.upload-artifact }}
     strategy:
@@ -1965,13 +1963,7 @@ jobs:
               arch: x86_64,
               suffix: "",
             }
-          - {
-              target: x86_64-unknown-linux-gnu,
-              distro: ubuntu22.04,
-              on: ubuntu-22.04,
-              arch: x86_64,
-              suffix: "-sciter",
-            }
+          # Sciter flatpak disabled — Flutter is the only supported UI.
           - {
               target: aarch64-unknown-linux-gnu,
               # try out newer flatpak since error of "error: Nothing matches org.freedesktop.Platform in remote flathub"
