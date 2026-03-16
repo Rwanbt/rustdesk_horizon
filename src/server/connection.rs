@@ -345,8 +345,8 @@ const TEST_DELAY_TIMEOUT: Duration = Duration::from_secs(1);
 const SEC30: Duration = Duration::from_secs(30);
 const H1: Duration = Duration::from_secs(3600);
 const MILLI1: Duration = Duration::from_millis(1);
-const SEND_TIMEOUT_VIDEO: u64 = 12_000;
-const SEND_TIMEOUT_OTHER: u64 = SEND_TIMEOUT_VIDEO * 10;
+const SEND_TIMEOUT_VIDEO: u64 = 5_000;
+const SEND_TIMEOUT_OTHER: u64 = 30_000;
 const SESSION_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl Connection {
@@ -4266,6 +4266,7 @@ impl Connection {
             return;
         }
         self.closed = true;
+        log::info!("Connection::on_close() id={}, reason={}", self.inner.id(), reason);
         // If voice A,B -> C, and A,B has voice call
         // B disconnects, C will reset the voice call input.
         //
@@ -5279,6 +5280,17 @@ impl Default for PortableState {
 
 impl Drop for Connection {
     fn drop(&mut self) {
+        // Clean up virtual displays created by this connection.
+        // vd_controller.close() returns empty Vec if on_close() already ran.
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+        {
+            for idx in self.vd_controller.close() {
+                if let Err(e) = virtual_display_manager::plug_out_monitor(idx, false, true) {
+                    log::warn!("Drop: Failed to plug out virtual display {}: {}", idx, e);
+                }
+            }
+        }
+
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         self.release_pressed_modifiers();
 
