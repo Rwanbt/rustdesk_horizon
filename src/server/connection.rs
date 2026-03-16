@@ -213,6 +213,7 @@ pub struct Connection {
     read_jobs: Vec<fs::TransferJob>,
     timer: crate::RustDeskInterval,
     file_timer: crate::RustDeskInterval,
+    file_transfer_idle: bool,
     file_transfer: Option<(String, bool)>,
     view_camera: bool,
     terminal: bool,
@@ -248,9 +249,7 @@ pub struct Connection {
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     enable_file_transfer: bool,
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-    virtual_display_resolution: Option<(u32, u32)>,
-    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-    virtual_display_indices: Vec<i32>,
+    vd_controller: virtual_display_manager::VdController,
     // by peer
     audio_sender: Option<MediaSender>,
     // audio by the remote peer/client
@@ -346,8 +345,8 @@ const TEST_DELAY_TIMEOUT: Duration = Duration::from_secs(1);
 const SEC30: Duration = Duration::from_secs(30);
 const H1: Duration = Duration::from_secs(3600);
 const MILLI1: Duration = Duration::from_millis(1);
-const SEND_TIMEOUT_VIDEO: u64 = 12_000;
-const SEND_TIMEOUT_OTHER: u64 = SEND_TIMEOUT_VIDEO * 10;
+const SEND_TIMEOUT_VIDEO: u64 = 5_000;
+const SEND_TIMEOUT_OTHER: u64 = 30_000;
 const SESSION_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl Connection {
@@ -410,6 +409,7 @@ impl Connection {
             read_jobs: Vec::new(),
             timer: crate::rustdesk_interval(time::interval(SEC30)),
             file_timer: crate::rustdesk_interval(time::interval(SEC30)),
+            file_transfer_idle: true,
             file_transfer: None,
             view_camera: false,
             terminal: false,
@@ -438,9 +438,7 @@ impl Connection {
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             enable_file_transfer: false,
             #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-            virtual_display_resolution: None,
-            #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-            virtual_display_indices: Vec::new(),
+            vd_controller: virtual_display_manager::VdController::new(),
             disable_clipboard: false,
             disable_keyboard: false,
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -807,6 +805,7 @@ impl Connection {
                 },
                 _ = conn.file_timer.tick() => {
                     if !conn.read_jobs.is_empty() {
+                        conn.file_transfer_idle = false;
                         conn.send_to_cm(ipc::Data::FileTransferLog(("transfer".to_string(), fs::serialize_transfer_jobs(&conn.read_jobs))));
                         match fs::handle_read_jobs(&mut conn.read_jobs, &mut conn.stream).await {
                             Ok(log) => {
@@ -819,7 +818,8 @@ impl Connection {
                                 break;
                             }
                         }
-                    } else {
+                    } else if !conn.file_transfer_idle {
+                        conn.file_transfer_idle = true;
                         conn.file_timer = crate::rustdesk_interval(time::interval_at(Instant::now() + SEC30, SEC30));
                     }
                 }
@@ -2115,6 +2115,11 @@ impl Connection {
     }
 
     async fn on_message(&mut self, msg: Message) -> bool {
+        // Check for pending virtual display timeout (desktop clients that
+        // never send #vd_res). Checked lazily on each incoming message.
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+        self.check_pending_vd_timeout().await;
+
         if let Some(message::Union::Misc(misc)) = &msg.union {
             // Move the CloseReason forward, as this message needs to be received when unauthorized, especially for kcp.
             if let Some(misc::Union::CloseReason(s)) = &misc.union {
@@ -3055,7 +3060,16 @@ impl Connection {
                                     {
                                         if (640..=7680).contains(&w) && (480..=4320).contains(&h) {
                                             log::info!("VD: stored resolution {}x{}", w, h);
-                                            self.virtual_display_resolution = Some((w, h));
+                                            let decisions = self.vd_controller.handle_resolution(w, h);
+                                            if !decisions.is_empty() {
+                                                log::info!(
+                                                    "VD: processing {} deferred toggle(s) with resolution {}x{}",
+                                                    decisions.len(), w, h
+                                                );
+                                            }
+                                            for decision in decisions {
+                                                self.execute_vd_decision(decision).await;
+                                            }
                                         } else {
                                             log::warn!("VD: resolution {}x{} out of range", w, h);
                                         }
@@ -3517,6 +3531,8 @@ impl Connection {
     }
 
     fn refresh_video_display(&self, display: Option<usize>) {
+        // Suppress cursor broadcasts during display transition to prevent flickering
+        display_service::DISPLAY_IN_TRANSITION.store(true, std::sync::atomic::Ordering::Relaxed);
         video_service::refresh();
         self.server.upgrade().map(|s| {
             s.read().unwrap().set_video_service_opt(
@@ -3570,21 +3586,26 @@ impl Connection {
         let new_service_name = video_service::get_service_name(self.video_source(), display_idx);
         let old_service_name =
             video_service::get_service_name(self.video_source(), self.display_idx);
-        let mut lock = server.write().unwrap();
-        if display_idx != *display_service::PRIMARY_DISPLAY_IDX {
-            if !lock.contains(&new_service_name) {
-                lock.add_service(Box::new(video_service::new(
-                    self.video_source(),
-                    display_idx,
-                )));
+        // Pre-compute outside write lock to reduce lock hold time
+        let multi_ui = crate::common::is_support_multi_ui_session(&self.lr.version);
+        let inner = self.inner.clone();
+        {
+            let mut lock = server.write().unwrap();
+            if display_idx != *display_service::PRIMARY_DISPLAY_IDX {
+                if !lock.contains(&new_service_name) {
+                    lock.add_service(Box::new(video_service::new(
+                        self.video_source(),
+                        display_idx,
+                    )));
+                }
             }
+            // For versions greater than 1.2.4, a `CaptureDisplays` message will be sent immediately.
+            // Unnecessary capturers will be removed then.
+            if !multi_ui {
+                lock.subscribe(&old_service_name, inner.clone(), false);
+            }
+            lock.subscribe(&new_service_name, inner, true);
         }
-        // For versions greater than 1.2.4, a `CaptureDisplays` message will be sent immediately.
-        // Unnecessary capturers will be removed then.
-        if !crate::common::is_support_multi_ui_session(&self.lr.version) {
-            lock.subscribe(&old_service_name, self.inner.clone(), false);
-        }
-        lock.subscribe(&new_service_name, self.inner.clone(), true);
         self.display_idx = display_idx;
     }
 
@@ -3645,60 +3666,92 @@ impl Connection {
         }
     }
 
+    /// Check for pending virtual display timeout (desktop clients that
+    /// never send #vd_res). Delegates to VdController.
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    async fn check_pending_vd_timeout(&mut self) {
+        let decisions = self.vd_controller.check_timeout();
+        if !decisions.is_empty() {
+            log::info!(
+                "VD: timeout - processing {} deferred toggle(s) with default resolution",
+                decisions.len()
+            );
+            for decision in decisions {
+                self.execute_vd_decision(decision).await;
+            }
+        }
+    }
+
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     async fn toggle_virtual_display(&mut self, t: ToggleVirtualDisplay) {
+        if !self.keyboard {
+            let mut msg_out = Message::new();
+            msg_out.set_message_box(MessageBox {
+                msgtype: "nook-nocancel-hasclose".to_owned(),
+                title: "Virtual display".to_owned(),
+                text: "No permission".to_string(),
+                link: "".to_owned(),
+                ..Default::default()
+            });
+            self.send(msg_out).await;
+            return;
+        }
+
+        if t.on && !virtual_display_manager::is_virtual_display_supported() {
+            let mut msg_out = Message::new();
+            msg_out.set_message_box(MessageBox {
+                msgtype: "nook-nocancel-hasclose".to_owned(),
+                title: "Virtual display".to_owned(),
+                text: "Virtual display not supported on this system".to_string(),
+                link: "".to_owned(),
+                ..Default::default()
+            });
+            self.send(msg_out).await;
+            return;
+        }
+
+        let decision = self.vd_controller.toggle(t.display, t.on);
+        self.execute_vd_decision(decision).await;
+    }
+
+    /// Execute a VdDecision by performing the actual I/O operations.
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    async fn execute_vd_decision(&mut self, decision: virtual_display_manager::VdDecision) {
+        use virtual_display_manager::VdDecision;
+
         let make_msg = |text: String| {
             let mut msg_out = Message::new();
-            let res = MessageBox {
+            msg_out.set_message_box(MessageBox {
                 msgtype: "nook-nocancel-hasclose".to_owned(),
                 title: "Virtual display".to_owned(),
                 text,
                 link: "".to_owned(),
                 ..Default::default()
-            };
-            msg_out.set_message_box(res);
+            });
             msg_out
         };
 
-        if !self.keyboard {
-            self.send(make_msg("No permission".to_string())).await;
-            return;
-        }
-
-        if t.on {
-            if !virtual_display_manager::is_virtual_display_supported() {
-                self.send(make_msg("Virtual display not supported on this system".to_string()))
-                    .await;
-            } else {
-                let vd_res = self.virtual_display_resolution;
-                let (w, h) = vd_res.unwrap_or((1920, 1080));
-                log::info!("VD: toggle_virtual_display ON with resolution {}x{} (from_client={:?})", w, h, vd_res);
-                virtual_display_manager::set_custom_resolution(w, h);
+        match decision {
+            VdDecision::Create { display, width, height } => {
+                log::info!("VD: creating display {} at {}x{}", display, width, height);
+                virtual_display_manager::set_custom_resolution(width, height);
                 let modes = vec![virtual_display_manager::MonitorMode {
-                    width: w,
-                    height: h,
+                    width,
+                    height,
                     sync: 60,
                 }];
-                let display = t.display;
-                // Run on a dedicated thread to avoid blocking the async connection handler.
-                // The Mutter ScreenCast backend performs D-Bus calls + sleeps that would
-                // otherwise freeze input/video/keepalive processing for ~10 seconds.
                 let result = tokio::task::spawn_blocking(move || {
                     virtual_display_manager::plug_in_monitor(display as _, modes)
                 })
                 .await;
                 match result {
                     Ok(Ok(())) => {
-                        self.virtual_display_indices.push(t.display);
-
-                        // Trigger SWITCH on all video services to reinitialize PipeWire
-                        // and discover the new virtual display.
-                        // Flow: SWITCH → clear() → check_init() → get_capturables()
-                        // get_capturables_via_mutter() detects connector change and recreates sessions.
                         self.refresh_video_display(None);
                     }
                     Ok(Err(e)) => {
                         log::error!("Failed to plug in virtual display: {}", e);
+                        // Roll back so a future toggle isn't skipped as "already active"
+                        self.vd_controller.rollback_create(display);
                         self.send(make_msg(format!(
                             "Failed to plug in virtual display: {}",
                             e
@@ -3707,35 +3760,40 @@ impl Connection {
                     }
                     Err(e) => {
                         log::error!("Virtual display task panicked: {}", e);
+                        self.vd_controller.rollback_create(display);
                         self.send(make_msg("Virtual display creation failed".to_string()))
                             .await;
                     }
                 }
             }
-        } else {
-            let display = t.display;
-            let result = tokio::task::spawn_blocking(move || {
-                virtual_display_manager::plug_out_monitor(display, false, true)
-            })
-            .await;
-            match result {
-                Ok(Ok(())) => {
-                    self.virtual_display_indices.retain(|&i| i != t.display);
-
-                    // Trigger SWITCH to reinitialize PipeWire without the removed display
-                    self.refresh_video_display(None);
+            VdDecision::Remove { display } => {
+                log::info!("VD: removing display {}", display);
+                let result = tokio::task::spawn_blocking(move || {
+                    virtual_display_manager::plug_out_monitor(display, false, true)
+                })
+                .await;
+                match result {
+                    Ok(Ok(())) => {
+                        self.refresh_video_display(None);
+                    }
+                    Ok(Err(e)) => {
+                        log::error!("Failed to plug out virtual display {}: {}", display, e);
+                        self.send(make_msg(format!(
+                            "Failed to plug out virtual displays: {}",
+                            e
+                        )))
+                        .await;
+                    }
+                    Err(e) => {
+                        log::error!("Virtual display removal task panicked: {}", e);
+                    }
                 }
-                Ok(Err(e)) => {
-                    log::error!("Failed to plug out virtual display {}: {}", t.display, e);
-                    self.send(make_msg(format!(
-                        "Failed to plug out virtual displays: {}",
-                        e
-                    )))
-                    .await;
-                }
-                Err(e) => {
-                    log::error!("Virtual display removal task panicked: {}", e);
-                }
+            }
+            VdDecision::Deferred { display } => {
+                log::info!("VD: deferring display {} creation (waiting for client resolution)", display);
+            }
+            VdDecision::Skipped { display, reason } => {
+                log::info!("VD: display {} skipped ({})", display, reason);
             }
         }
     }
@@ -4208,6 +4266,7 @@ impl Connection {
             return;
         }
         self.closed = true;
+        log::info!("Connection::on_close() id={}, reason={}", self.inner.id(), reason);
         // If voice A,B -> C, and A,B has voice call
         // B disconnects, C will reset the voice call input.
         //
@@ -4236,7 +4295,7 @@ impl Connection {
         #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         {
             // Plug out virtual displays created by this connection
-            for idx in self.virtual_display_indices.drain(..) {
+            for idx in self.vd_controller.close() {
                 if let Err(e) = virtual_display_manager::plug_out_monitor(idx, false, true) {
                     log::warn!("Failed to plug out virtual display {} on close: {}", idx, e);
                 }
@@ -4424,6 +4483,7 @@ impl Connection {
         job.is_remote = true;
         job.conn_id = self.inner.id();
         self.read_jobs.push(job);
+        self.file_transfer_idle = false;
         self.file_timer = crate::rustdesk_interval(time::interval(MILLI1));
         let audit_path = if job_type == fs::JobType::Printer {
             "Remote print".to_owned()
@@ -5220,6 +5280,17 @@ impl Default for PortableState {
 
 impl Drop for Connection {
     fn drop(&mut self) {
+        // Clean up virtual displays created by this connection.
+        // vd_controller.close() returns empty Vec if on_close() already ran.
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+        {
+            for idx in self.vd_controller.close() {
+                if let Err(e) = virtual_display_manager::plug_out_monitor(idx, false, true) {
+                    log::warn!("Drop: Failed to plug out virtual display {}: {}", idx, e);
+                }
+            }
+        }
+
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         self.release_pressed_modifiers();
 
@@ -5668,5 +5739,21 @@ mod test {
         assert!(Ipv6Addr::from_str("::1").is_ok());
         assert!(Ipv6Addr::from_str("127.0.0.1").is_err());
         assert!(Ipv6Addr::from_str("0").is_err());
+    }
+
+    #[test]
+    fn connection_sets_transition_flag_before_refresh() {
+        // Source-level: verify DISPLAY_IN_TRANSITION is set BEFORE OPTION_REFRESH
+        let src = include_str!("connection.rs");
+        let flag_pos = src
+            .find("DISPLAY_IN_TRANSITION.store(true")
+            .expect("connection.rs must set DISPLAY_IN_TRANSITION to true");
+        let refresh_pos = src
+            .find("video_service::OPTION_REFRESH")
+            .expect("connection.rs must reference OPTION_REFRESH");
+        assert!(
+            flag_pos < refresh_pos,
+            "DISPLAY_IN_TRANSITION must be set BEFORE OPTION_REFRESH to prevent cursor flicker"
+        );
     }
 }

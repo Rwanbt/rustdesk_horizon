@@ -2011,11 +2011,15 @@ pub(super) fn session_update_virtual_display(session: &FlutterSession, index: i3
             }
         }
     } else {
-        let mut vdisplays = displays
+        let mut vdisplays: Vec<String> = displays
             .split(',')
+            .filter(|x| !x.is_empty())
             .map(|x| x.to_string())
-            .collect::<Vec<_>>();
+            .collect();
         let len = vdisplays.len();
+        // For index=0 (generic toggle), count existing "0" entries to track
+        // how many generic displays are active. Don't accumulate duplicates
+        // that would cause N auto-creates on reconnect.
         if index == 0 {
             vdisplays.push(index.to_string());
         } else {

@@ -530,6 +530,14 @@ impl Drop for Server {
         }
         #[cfg(target_os = "linux")]
         wayland::clear();
+        // Gracefully shut down all EVDI virtual displays so KScreen
+        // doesn't segfault on the sudden DRM topology change.
+        #[cfg(target_os = "linux")]
+        {
+            if let Err(e) = crate::virtual_display_manager::linux_evdi::reset_all() {
+                log::warn!("EVDI: cleanup in Server::drop failed: {}", e);
+            }
+        }
     }
 }
 
@@ -608,7 +616,11 @@ pub async fn start_server(is_server: bool, no_server: bool) {
         #[cfg(target_os = "linux")]
         std::thread::spawn(|| {
             crate::platform::linux::prepare_evdi();
+            // reload_evdi_lib MUST come before cleanup: cleanup needs library
+            // function pointers (evdi_open/disconnect/close) to safely tear
+            // down orphaned devices one at a time.
             crate::virtual_display_manager::linux_evdi::reload_evdi_lib();
+            crate::virtual_display_manager::linux_evdi::cleanup_orphaned_evdi_devices();
             crate::virtual_display_manager::linux_evdi::mark_prepare_done();
         });
         #[cfg(target_os = "windows")]

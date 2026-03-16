@@ -441,7 +441,7 @@ def build_flutter_arch_manjaro(version, features):
     system2('flutter build linux --release')
     system2(f'strip {flutter_build_dir}/lib/librustdesk.so')
     os.chdir('../res')
-    system2('HBB=`pwd`/.. FLUTTER=1 makepkg -f')
+    system2('HBB=`pwd`/.. FLUTTER=1 makepkg -f --nodeps')
 
 
 def build_flutter_windows(version, features, skip_portable_pack):
@@ -536,7 +536,7 @@ def main():
             system2('git checkout src/ui/common.tis')
             system2('strip target/release/rustdesk')
             system2('ln -s res/pacman_install && ln -s res/PKGBUILD')
-            system2('HBB=`pwd` makepkg -f')
+            system2('HBB=`pwd` makepkg -f --nodeps')
         system2('mv rustdesk-%s-0-x86_64.pkg.tar.zst rustdesk-%s-manjaro-arch.pkg.tar.zst' % (
             version, version))
         # pacman -U ./rustdesk.pkg.tar.zst

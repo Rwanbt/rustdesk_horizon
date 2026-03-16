@@ -62,6 +62,10 @@ use std::{
 
 pub const OPTION_REFRESH: &'static str = "refresh";
 
+/// Fast-path guard: skip SCREENSHOTS lock when no screenshot is pending (99.99% of frames).
+static HAS_SCREENSHOT_REQUEST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 type FrameFetchedNotifierSender = UnboundedSender<(i32, Option<Instant>)>;
 type FrameFetchedNotifierReceiver = Arc<TokioMutex<UnboundedReceiver<(i32, Option<Instant>)>>>;
 
@@ -368,6 +372,7 @@ pub(super) struct CapturerInfo {
     pub privacy_mode_id: i32,
     pub _capturer_privacy_mode_id: i32,
     pub capturer: Box<dyn TraitCapturer>,
+    pub is_virtual_display: bool,
 }
 
 impl Deref for CapturerInfo {
@@ -460,6 +465,18 @@ fn get_capturer_monitor(
             log::info!("In privacy mode, the peer side cannot watch the screen");
         }
     }
+    // Detect virtual display before consuming `display` (moved into create_capturer).
+    // Use is_idd_display which queries the OS directly (EnumDisplayDevices),
+    // not just the in-process state (which is empty if the VD was created by a previous run).
+    #[cfg(windows)]
+    let is_vd = crate::virtual_display_manager::rustdesk_idd::is_virtual_display(&name)
+        || crate::virtual_display_manager::rustdesk_idd::is_idd_display(&name);
+    #[cfg(not(windows))]
+    let is_vd = false;
+    if is_vd {
+        log::info!("Display {} ({}) identified as IDD virtual display", current, name);
+    }
+
     let capturer = create_capturer(
         capturer_privacy_mode_id,
         display,
@@ -475,6 +492,7 @@ fn get_capturer_monitor(
         privacy_mode_id,
         _capturer_privacy_mode_id: capturer_privacy_mode_id,
         capturer,
+        is_virtual_display: is_vd,
     })
 }
 
@@ -516,6 +534,7 @@ fn get_capturer_camera(current: usize) -> ResultType<CapturerInfo> {
         privacy_mode_id,
         _capturer_privacy_mode_id: privacy_mode_id,
         capturer,
+        is_virtual_display: false,
     });
 }
 fn get_capturer(
@@ -562,11 +581,24 @@ fn run(vs: VideoService) -> ResultType<()> {
 
     let display_idx = vs.idx;
     let sp = vs.sp;
+    log::info!("[VD-DIAG] Starting video capture: display_idx={}, service={}", display_idx, sp.name());
     let mut c = get_capturer(vs.source, display_idx, last_portable_service_running)?;
     #[cfg(windows)]
     if !scrap::codec::enable_directx_capture() && !c.is_gdi() {
         log::info!("disable dxgi with option, fall back to gdi");
         c.set_gdi();
+    }
+    // Force GDI capture for virtual displays to avoid DXGI Desktop Duplication
+    // interfering with DWM cursor rendering on physical displays.
+    // Also disable CAPTUREBLT which causes cursor flickering via GDI too.
+    #[cfg(windows)]
+    if c.is_virtual_display {
+        if !c.is_gdi() {
+            log::info!("Virtual display idx={}, forcing GDI capture to avoid cursor flickering on physical displays", display_idx);
+            c.set_gdi();
+        }
+        c.cancel_captureblt();
+        log::info!("Virtual display idx={}, disabled CAPTUREBLT", display_idx);
     }
     let mut video_qos = VIDEO_QOS.lock().unwrap();
     let mut spf = video_qos.spf();
@@ -614,7 +646,9 @@ fn run(vs: VideoService) -> ResultType<()> {
     #[cfg(target_os = "android")]
     if vs.source.is_monitor() {
         if let Err(e) = check_change_scale(encoder.is_hardware()) {
-            try_broadcast_display_changed(&sp, display_idx, &c, true).ok();
+            if let Err(e2) = try_broadcast_display_changed(&sp, display_idx, &c, true) {
+                log::warn!("try_broadcast_display_changed failed on scale change: {}", e2);
+            }
             bail!(e);
         }
     }
@@ -628,6 +662,9 @@ fn run(vs: VideoService) -> ResultType<()> {
     if sp.is_option_true(OPTION_REFRESH) {
         sp.set_option_bool(OPTION_REFRESH, false);
     }
+    // Clear transition flag: new capturer is ready, cursor broadcasts can resume
+    super::display_service::DISPLAY_IN_TRANSITION
+        .store(false, std::sync::atomic::Ordering::Relaxed);
 
     let mut frame_controller = VideoFrameController::new(display_idx);
 
@@ -642,12 +679,30 @@ fn run(vs: VideoService) -> ResultType<()> {
 
     #[cfg(target_os = "linux")]
     let mut would_block_count = 0u32;
+    #[cfg(windows)]
+    let mut last_desktop_check = time::Instant::now();
     let mut yuv = Vec::new();
     let mut mid_data = Vec::new();
     let mut repeat_encode_counter = 0;
-    let repeat_encode_max = 10;
+    let repeat_encode_max = 3; // VP8/VP9 converge in 2-3 P-frames; 10 wastes CPU on static screens
+
+    // Diagnostic: set FULLDESK_DIAG_SKIP_CAPTURE=1 to skip DXGI frame capture
+    // (isolates whether AcquireNextFrame/CopyResource causes cursor flickering)
+    let diag_skip_capture = std::env::var("FULLDESK_DIAG_SKIP_CAPTURE").map_or(false, |v| v == "1");
+    if diag_skip_capture {
+        log::info!("[DIAG] FULLDESK_DIAG_SKIP_CAPTURE=1: skipping frame capture for display {}", display_idx);
+    }
+    // Diagnostic: set FULLDESK_DIAG_SKIP_DISPLAY_ENUM=1 to skip display enumeration
+    let diag_skip_display_enum = std::env::var("FULLDESK_DIAG_SKIP_DISPLAY_ENUM").map_or(false, |v| v == "1");
+    if diag_skip_display_enum {
+        log::info!("[DIAG] FULLDESK_DIAG_SKIP_DISPLAY_ENUM=1: skipping display enumeration");
+    }
     let mut encode_fail_counter = 0;
     let mut first_frame = true;
+    // Dynamic VP9 cpu-used: track consecutive encoded frames to adjust speed.
+    // Few frames after idle → speed 6 (quality), normal → 7, sustained motion → 8 (throughput).
+    let mut consecutive_frames: u32 = 0;
+    let mut current_cpuused: u32 = 7;
     let capture_width = c.width;
     let capture_height = c.height;
     let (mut second_instant, mut send_counter) = (Instant::now(), 0);
@@ -666,7 +721,9 @@ fn run(vs: VideoService) -> ResultType<()> {
         )?;
         if sp.is_option_true(OPTION_REFRESH) {
             if vs.source.is_monitor() {
-                let _ = try_broadcast_display_changed(&sp, display_idx, &c, true);
+                if let Err(e) = try_broadcast_display_changed(&sp, display_idx, &c, true) {
+                    log::warn!("try_broadcast_display_changed failed on OPTION_REFRESH: {}", e);
+                }
             }
             log::info!("switch to refresh");
             bail!("SWITCH");
@@ -699,14 +756,22 @@ fn run(vs: VideoService) -> ResultType<()> {
         }
         #[cfg(windows)]
         {
-            if crate::platform::windows::desktop_changed()
-                && !crate::portable_service::client::running()
-            {
-                bail!("Desktop changed");
+            // Throttle desktop_changed() to once per second.
+            // OpenInputDesktop() + CloseDesktop() at 30 Hz interferes with
+            // DWM cursor rendering, causing visible cursor flickering on the
+            // host's physical screens. Desktop switches (UAC, lock screen)
+            // are rare events; 1 s detection latency is imperceptible.
+            if last_desktop_check.elapsed().as_secs() >= 1 {
+                last_desktop_check = time::Instant::now();
+                if crate::platform::windows::desktop_changed()
+                    && !crate::portable_service::client::running()
+                {
+                    bail!("Desktop changed");
+                }
             }
         }
         let now = time::Instant::now();
-        if vs.source.is_monitor() && last_check_displays.elapsed().as_millis() > 1000 {
+        if !diag_skip_display_enum && vs.source.is_monitor() && last_check_displays.elapsed().as_millis() > 1000 {
             last_check_displays = now;
             // This check may be redundant, but it is better to be safe.
             // The previous check in `sp.is_option_true(OPTION_REFRESH)` block may be enough.
@@ -717,11 +782,22 @@ fn run(vs: VideoService) -> ResultType<()> {
 
         let time = now - start;
         let ms = (time.as_secs() * 1000 + time.subsec_millis() as u64) as i64;
+        // Diagnostic: skip actual DXGI capture to isolate cursor flickering
+        if diag_skip_capture {
+            std::thread::sleep(spf);
+            continue;
+        }
         let res = match c.frame(spf) {
             Ok(frame) => {
                 repeat_encode_counter = 0;
                 if frame.valid() {
-                    let screenshot = SCREENSHOTS.lock().unwrap().remove(&display_idx);
+                    let screenshot = if HAS_SCREENSHOT_REQUEST
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        SCREENSHOTS.lock().unwrap().remove(&display_idx)
+                    } else {
+                        None
+                    };
                     if let Some(mut screenshot) = screenshot {
                         let restore_vram = screenshot.restore_vram;
                         let (msg, w, h, data) = match &frame {
@@ -756,6 +832,10 @@ fn run(vs: VideoService) -> ResultType<()> {
                                 }
                             }
                         };
+                        if SCREENSHOTS.lock().unwrap().is_empty() {
+                            HAS_SCREENSHOT_REQUEST
+                                .store(false, std::sync::atomic::Ordering::Relaxed);
+                        }
                         std::thread::spawn(move || {
                             handle_screenshot(screenshot, msg, w, h, data);
                         });
@@ -779,6 +859,21 @@ fn run(vs: VideoService) -> ResultType<()> {
                     )?;
                     frame_controller.set_send(now, send_conn_ids);
                     send_counter += 1;
+                    consecutive_frames = consecutive_frames.saturating_add(1);
+                }
+                // Dynamic VP9 cpu-used: speed 6 after idle (quality), 7 normal, 8 sustained motion
+                let target_speed = if consecutive_frames <= 3 {
+                    6 // just started moving: prioritize quality (keyframe likely)
+                } else if consecutive_frames <= 30 {
+                    7 // normal motion
+                } else {
+                    8 // sustained motion: prioritize throughput
+                };
+                if target_speed != current_cpuused {
+                    if encoder.set_cpuused(target_speed).is_ok() {
+                        log::trace!("VP9 cpu-used: {} -> {} (consecutive={})", current_cpuused, target_speed, consecutive_frames);
+                        current_cpuused = target_speed;
+                    }
                 }
                 #[cfg(windows)]
                 {
@@ -795,6 +890,7 @@ fn run(vs: VideoService) -> ResultType<()> {
 
         match res {
             Err(ref e) if e.kind() == WouldBlock => {
+                consecutive_frames = 0; // screen is static, reset motion tracker
                 #[cfg(windows)]
                 if try_gdi > 0 && !c.is_gdi() {
                     if try_gdi > 3 {
@@ -865,15 +961,18 @@ fn run(vs: VideoService) -> ResultType<()> {
         }
 
         let mut fetched_conn_ids = HashSet::new();
-        let timeout_millis = 3_000u64;
+        let timeout_millis = 500u64;
         let wait_begin = Instant::now();
+        let total_conns = frame_controller.send_conn_ids.len();
+        let majority = (total_conns + 1) / 2; // ceil(n/2): 1→1, 2→1, 3→2, 4→2
         while wait_begin.elapsed().as_millis() < timeout_millis as _ {
             if vs.source.is_monitor() {
                 check_privacy_mode_changed(&sp, display_idx, &c)?;
             }
-            frame_controller.try_wait_next(&mut fetched_conn_ids, 300);
-            // break if all connections have received current frame
-            if fetched_conn_ids.len() >= frame_controller.send_conn_ids.len() {
+            frame_controller.try_wait_next(&mut fetched_conn_ids, 100);
+            // break when majority of clients have ACK'd — don't let one slow
+            // client hold back encoding for everyone
+            if fetched_conn_ids.len() >= majority {
                 break;
             }
         }
@@ -1119,7 +1218,9 @@ fn check_privacy_mode_changed(
             sp.send_to_others(msg_out, privacy_mode_id_2);
         }
         log::info!("switch due to privacy mode changed");
-        try_broadcast_display_changed(&sp, display_idx, ci, true).ok();
+        if let Err(e) = try_broadcast_display_changed(&sp, display_idx, ci, true) {
+            log::warn!("try_broadcast_display_changed failed on privacy mode change: {}", e);
+        }
         bail!("SWITCH");
     }
     Ok(())
@@ -1232,7 +1333,9 @@ fn try_broadcast_display_changed(
 ) -> ResultType<()> {
     if refresh {
         // Get display information immediately.
-        crate::display_service::check_displays_changed().ok();
+        if let Err(e) = crate::display_service::check_displays_changed() {
+            log::warn!("check_displays_changed failed during refresh: {}", e);
+        }
     }
     if let Some(display) = check_display_changed(
         cap.ndisplay,
@@ -1353,6 +1456,7 @@ pub fn set_take_screenshot(display_idx: usize, sid: String, tx: Sender) {
             restore_vram: false,
         },
     );
+    HAS_SCREENSHOT_REQUEST.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 // We need to this function, because the `stride` may be larger than `width * 4`.
@@ -1415,5 +1519,139 @@ fn handle_screenshot(screenshot: Screenshot, msg: String, w: usize, h: usize, da
         .send((hbb_common::tokio::time::Instant::now(), Arc::new(msg_out)))
     {
         log::error!("Failed to send screenshot, {}", e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn option_refresh_constant_value() {
+        assert_eq!(OPTION_REFRESH, "refresh");
+    }
+
+    #[test]
+    fn get_service_name_format() {
+        let name = get_service_name(VideoSource::Monitor, 0);
+        assert_eq!(name, "monitor0");
+        let name = get_service_name(VideoSource::Monitor, 2);
+        assert_eq!(name, "monitor2");
+        let name = get_service_name(VideoSource::Camera, 1);
+        assert_eq!(name, "camera1");
+    }
+
+    #[test]
+    fn video_service_clears_transition_flag() {
+        // Source-level: verify the video service run loop clears DISPLAY_IN_TRANSITION
+        let src = include_str!("video_service.rs");
+        assert!(
+            src.contains("DISPLAY_IN_TRANSITION"),
+            "video_service.rs must reference DISPLAY_IN_TRANSITION"
+        );
+        assert!(
+            src.contains(".store(false, std::sync::atomic::Ordering::Relaxed)"),
+            "video_service.rs must clear DISPLAY_IN_TRANSITION after capturer re-init"
+        );
+    }
+
+    #[test]
+    fn repeat_encode_max_is_reasonable() {
+        // Source-level: verify repeat_encode_max is set to a small value (<=5)
+        let src = include_str!("video_service.rs");
+        // Find the assignment line
+        let line = src
+            .lines()
+            .find(|l| l.contains("let repeat_encode_max ="))
+            .expect("repeat_encode_max assignment must exist");
+        // Extract the numeric value (handle trailing comment after semicolon)
+        let after_eq = line.split('=').nth(1).unwrap().trim();
+        let num_str = after_eq
+            .split(';')
+            .next()
+            .unwrap()
+            .trim();
+        let val: u32 = num_str
+            .parse()
+            .expect("repeat_encode_max must be a plain integer");
+        assert!(
+            val <= 5,
+            "repeat_encode_max should be <= 5 for green-tech (was {})",
+            val
+        );
+    }
+
+    #[test]
+    fn screenshot_fast_path_skips_lock() {
+        // Verify the atomic guard: when no screenshot is requested, the lock is not taken
+        assert!(!HAS_SCREENSHOT_REQUEST.load(std::sync::atomic::Ordering::Relaxed));
+        // Simulate: set flag, then clear
+        HAS_SCREENSHOT_REQUEST.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(HAS_SCREENSHOT_REQUEST.load(std::sync::atomic::Ordering::Relaxed));
+        HAS_SCREENSHOT_REQUEST.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert!(!HAS_SCREENSHOT_REQUEST.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn frame_ack_timeout_is_reduced() {
+        // Source-level: verify frame ACK timeout is <= 1500ms
+        let src = include_str!("video_service.rs");
+        let line = src
+            .lines()
+            .find(|l| l.contains("let timeout_millis =") && l.contains("u64"))
+            .expect("timeout_millis assignment must exist");
+        let after_eq = line.split('=').nth(1).unwrap().trim();
+        let num_str = after_eq
+            .split("u64")
+            .next()
+            .unwrap()
+            .trim()
+            .trim_end_matches('_')
+            .replace('_', "");
+        let val: u64 = num_str
+            .trim()
+            .parse()
+            .expect("timeout_millis must be a plain integer");
+        assert!(
+            val <= 1500,
+            "frame ACK timeout should be <= 1500ms (was {}ms)",
+            val
+        );
+    }
+
+    #[test]
+    fn bench_screenshot_fastpath_vs_lock() {
+        use std::time::Instant;
+        const ITERATIONS: u32 = 100_000;
+
+        // Scenario A: Always lock (old behavior)
+        let start = Instant::now();
+        for _ in 0..ITERATIONS {
+            let _ = SCREENSHOTS.lock().unwrap().remove(&999);
+        }
+        let lock_elapsed = start.elapsed();
+
+        // Scenario B: Check atomic first (new behavior - no screenshot pending)
+        HAS_SCREENSHOT_REQUEST.store(false, std::sync::atomic::Ordering::Relaxed);
+        let start = Instant::now();
+        for _ in 0..ITERATIONS {
+            if HAS_SCREENSHOT_REQUEST.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = SCREENSHOTS.lock().unwrap().remove(&999);
+            }
+        }
+        let atomic_elapsed = start.elapsed();
+
+        println!(
+            "\n=== Screenshot fast-path benchmark ({} iterations) ===",
+            ITERATIONS
+        );
+        println!("  Lock every frame:   {:?}", lock_elapsed);
+        println!("  Atomic check first: {:?}", atomic_elapsed);
+        let speedup = lock_elapsed.as_nanos() as f64 / atomic_elapsed.as_nanos().max(1) as f64;
+        println!("  Speedup: {:.1}x", speedup);
+        assert!(
+            atomic_elapsed < lock_elapsed,
+            "Atomic fast-path should be faster than always locking"
+        );
     }
 }

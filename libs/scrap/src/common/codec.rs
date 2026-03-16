@@ -80,6 +80,12 @@ pub trait EncoderApi {
     fn is_hardware(&self) -> bool;
 
     fn disable(&self);
+
+    /// Adjust encoder CPU effort at runtime (VP9 only: speed 6-8).
+    /// Default no-op for encoders that don't support it.
+    fn set_cpuused(&mut self, _speed: u32) -> ResultType<()> {
+        Ok(())
+    }
 }
 
 pub struct Encoder {

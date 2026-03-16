@@ -49,6 +49,11 @@ pub struct Capturer {
     fastlane: bool,
     surface: ComPtr<IDXGISurface>,
     texture: ComPtr<ID3D11Texture2D>,
+    // Cached staging texture to avoid per-frame GPU allocation.
+    // Reused across frames as long as dimensions match.
+    staging: ComPtr<ID3D11Texture2D>,
+    staging_width: u32,
+    staging_height: u32,
     width: usize,
     height: usize,
     rotated: Vec<u8>,
@@ -164,6 +169,9 @@ impl Capturer {
             fastlane: desc.DesktopImageInSystemMemory == TRUE,
             surface: ComPtr(ptr::null_mut()),
             texture: ComPtr(ptr::null_mut()),
+            staging: ComPtr(ptr::null_mut()),
+            staging_width: 0,
+            staging_height: 0,
             width: display.width() as usize,
             height: display.height() as usize,
             display,
@@ -324,6 +332,12 @@ impl Capturer {
         self.gdi_capturer.take();
     }
 
+    pub fn cancel_captureblt(&mut self) {
+        if let Some(ref mut gdi) = self.gdi_capturer {
+            gdi.set_no_captureblt();
+        }
+    }
+
     #[cfg(feature = "vram")]
     pub fn set_output_texture(&mut self, texture: bool) {
         self.output_texture = texture;
@@ -365,27 +379,39 @@ impl Capturer {
         let mut texture_desc = mem::MaybeUninit::uninit().assume_init();
         (*texture.0).GetDesc(&mut texture_desc);
 
-        texture_desc.Usage = D3D11_USAGE_STAGING;
-        texture_desc.BindFlags = 0;
-        texture_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-        texture_desc.MiscFlags = 0;
+        // Reuse cached staging texture if dimensions match, otherwise create a new one.
+        if self.staging.is_null()
+            || self.staging_width != texture_desc.Width
+            || self.staging_height != texture_desc.Height
+        {
+            texture_desc.Usage = D3D11_USAGE_STAGING;
+            texture_desc.BindFlags = 0;
+            texture_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            texture_desc.MiscFlags = 0;
 
-        let mut readable = ptr::null_mut();
-        wrap_hresult((*self.device.0).CreateTexture2D(
-            &mut texture_desc,
-            ptr::null(),
-            &mut readable,
-        ))?;
-        (*readable).SetEvictionPriority(DXGI_RESOURCE_PRIORITY_MAXIMUM);
-        let readable = ComPtr(readable);
+            let mut readable = ptr::null_mut();
+            wrap_hresult((*self.device.0).CreateTexture2D(
+                &mut texture_desc,
+                ptr::null(),
+                &mut readable,
+            ))?;
+            // Use normal priority to avoid competing with game textures for VRAM.
+            (*readable).SetEvictionPriority(DXGI_RESOURCE_PRIORITY_NORMAL);
 
+            self.staging = ComPtr(readable);
+            self.staging_width = texture_desc.Width;
+            self.staging_height = texture_desc.Height;
+        }
+
+        // Copy GPU texture to cached staging texture.
+        (*self.context.0).CopyResource(self.staging.0 as *mut _, texture.0 as *mut _);
+
+        // Get IDXGISurface interface for Map/Unmap.
         let mut surface = ptr::null_mut();
-        (*readable.0).QueryInterface(
+        (*self.staging.0).QueryInterface(
             &IID_IDXGISurface,
             &mut surface as *mut *mut _ as *mut *mut _,
         );
-
-        (*self.context.0).CopyResource(readable.0 as *mut _, texture.0 as *mut _);
 
         Ok(surface)
     }
