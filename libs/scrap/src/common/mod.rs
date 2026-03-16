@@ -117,10 +117,33 @@ impl Default for ImageTexture {
 
 #[inline]
 pub fn would_block_if_equal(old: &mut Vec<u8>, b: &[u8]) -> std::io::Result<()> {
-    // does this really help?
-    if b == &old[..] {
-        return Err(std::io::ErrorKind::WouldBlock.into());
+    if old.len() == b.len() && !old.is_empty() {
+        // Sparse check: compare every 64th chunk to quickly detect changes.
+        // On changed frames (~99% of cases), this avoids a full 8MB comparison.
+        let chunk_size = 256; // compare 256-byte blocks
+        let step = b.len() / 64; // sample 64 points across the frame
+        if step > 0 {
+            let mut likely_equal = true;
+            let mut offset = 0;
+            while offset + chunk_size <= b.len() {
+                if old[offset..offset + chunk_size] != b[offset..offset + chunk_size] {
+                    likely_equal = false;
+                    break;
+                }
+                offset += step;
+            }
+            if likely_equal {
+                // All sampled chunks matched — do full comparison to confirm
+                if b == &old[..] {
+                    return Err(std::io::ErrorKind::WouldBlock.into());
+                }
+            }
+            // Frame changed — update the stored buffer
+            old.copy_from_slice(b);
+            return Ok(());
+        }
     }
+    // First frame or size changed
     old.resize(b.len(), 0);
     old.copy_from_slice(b);
     Ok(())

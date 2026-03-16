@@ -699,6 +699,10 @@ fn run(vs: VideoService) -> ResultType<()> {
     }
     let mut encode_fail_counter = 0;
     let mut first_frame = true;
+    // Dynamic VP9 cpu-used: track consecutive encoded frames to adjust speed.
+    // Few frames after idle → speed 6 (quality), normal → 7, sustained motion → 8 (throughput).
+    let mut consecutive_frames: u32 = 0;
+    let mut current_cpuused: u32 = 7;
     let capture_width = c.width;
     let capture_height = c.height;
     let (mut second_instant, mut send_counter) = (Instant::now(), 0);
@@ -855,6 +859,21 @@ fn run(vs: VideoService) -> ResultType<()> {
                     )?;
                     frame_controller.set_send(now, send_conn_ids);
                     send_counter += 1;
+                    consecutive_frames = consecutive_frames.saturating_add(1);
+                }
+                // Dynamic VP9 cpu-used: speed 6 after idle (quality), 7 normal, 8 sustained motion
+                let target_speed = if consecutive_frames <= 3 {
+                    6 // just started moving: prioritize quality (keyframe likely)
+                } else if consecutive_frames <= 30 {
+                    7 // normal motion
+                } else {
+                    8 // sustained motion: prioritize throughput
+                };
+                if target_speed != current_cpuused {
+                    if encoder.set_cpuused(target_speed).is_ok() {
+                        log::trace!("VP9 cpu-used: {} -> {} (consecutive={})", current_cpuused, target_speed, consecutive_frames);
+                        current_cpuused = target_speed;
+                    }
                 }
                 #[cfg(windows)]
                 {
@@ -871,6 +890,7 @@ fn run(vs: VideoService) -> ResultType<()> {
 
         match res {
             Err(ref e) if e.kind() == WouldBlock => {
+                consecutive_frames = 0; // screen is static, reset motion tracker
                 #[cfg(windows)]
                 if try_gdi > 0 && !c.is_gdi() {
                     if try_gdi > 3 {
@@ -941,15 +961,18 @@ fn run(vs: VideoService) -> ResultType<()> {
         }
 
         let mut fetched_conn_ids = HashSet::new();
-        let timeout_millis = 1_000u64; // Reduced from 3000: faster recovery from slow clients
+        let timeout_millis = 500u64;
         let wait_begin = Instant::now();
+        let total_conns = frame_controller.send_conn_ids.len();
+        let majority = (total_conns + 1) / 2; // ceil(n/2): 1→1, 2→1, 3→2, 4→2
         while wait_begin.elapsed().as_millis() < timeout_millis as _ {
             if vs.source.is_monitor() {
                 check_privacy_mode_changed(&sp, display_idx, &c)?;
             }
-            frame_controller.try_wait_next(&mut fetched_conn_ids, 300);
-            // break if all connections have received current frame
-            if fetched_conn_ids.len() >= frame_controller.send_conn_ids.len() {
+            frame_controller.try_wait_next(&mut fetched_conn_ids, 100);
+            // break when majority of clients have ACK'd — don't let one slow
+            // client hold back encoding for everyone
+            if fetched_conn_ids.len() >= majority {
                 break;
             }
         }

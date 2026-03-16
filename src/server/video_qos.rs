@@ -40,9 +40,12 @@ const BR_MIN_HIGH_RESOLUTION: f32 = 0.1; // For high resolution, BR_MIN is still
 const MAX_BR_MULTIPLE: f32 = 1.0;
 
 const HISTORY_DELAY_LEN: usize = 2;
-const ADJUST_RATIO_INTERVAL: usize = 3; // Adjust quality ratio every 3 seconds
+const ADJUST_RATIO_INTERVAL: usize = 1; // Adjust quality ratio every 1 second (was 3s)
 const DYNAMIC_SCREEN_THRESHOLD: usize = 2; // Allow increase quality ratio if encode more than 2 times in one second
 const DELAY_THRESHOLD_150MS: u32 = 150; // 150ms is the threshold for good network condition
+// Hysteresis band: only switch modes when delay crosses these thresholds
+const DELAY_HYSTERESIS_UP: u32 = 170; // switch from increase to decrease above this
+const DELAY_HYSTERESIS_DOWN: u32 = 130; // switch from decrease to increase below this
 
 #[derive(Default, Debug, Clone)]
 struct UserDelay {
@@ -470,27 +473,31 @@ impl VideoQoS {
 
         let mut v = current_ratio;
 
-        // Adjust ratio based on network delay thresholds
+        // Adjust ratio based on network delay with hysteresis to prevent oscillation.
+        // Multipliers are scaled ~1/3 vs original since interval is 1s instead of 3s.
         if max_delay < 50 {
-            if dynamic_screen {
-                v = current_ratio * 1.15;
-            }
-        } else if max_delay < 100 {
-            if dynamic_screen {
-                v = current_ratio * 1.1;
-            }
-        } else if max_delay < DELAY_THRESHOLD_150MS {
             if dynamic_screen {
                 v = current_ratio * 1.05;
             }
+        } else if max_delay < 100 {
+            if dynamic_screen {
+                v = current_ratio * 1.03;
+            }
+        } else if max_delay < DELAY_HYSTERESIS_DOWN {
+            // Below hysteresis low threshold: allow increase
+            if dynamic_screen {
+                v = current_ratio * 1.02;
+            }
+        } else if max_delay < DELAY_HYSTERESIS_UP {
+            // Inside hysteresis dead band (130-170ms): hold steady, no change
         } else if max_delay < 200 {
-            v = current_ratio * 0.95;
+            v = current_ratio * 0.98;
         } else if max_delay < 300 {
-            v = current_ratio * 0.9;
+            v = current_ratio * 0.97;
         } else if max_delay < 500 {
-            v = current_ratio * 0.85;
+            v = current_ratio * 0.95;
         } else {
-            v = current_ratio * 0.8;
+            v = current_ratio * 0.93;
         }
 
         // Limit quality increase rate for better stability
