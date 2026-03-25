@@ -838,15 +838,9 @@ jobs:
           name: fulldesk-unsigned-windows-x86_64
           path: ./windows-x86_64/
 
-      - name: Download Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: fulldesk-unsigned-windows-x86
-          path: ./windows-x86/
-
       - name: Combine unsigned app
         run: |
-          tar czf fulldesk-${{ env.VERSION }}-unsigned.tar.gz *.dmg windows-x86_64 windows-x86
+          tar czf fulldesk-${{ env.VERSION }}-unsigned.tar.gz *.dmg windows-x86_64
 
       - name: Publish unsigned app
         uses: softprops/action-gh-release@v1
@@ -1920,7 +1914,7 @@ jobs:
 
       - name: Rename Binary
         run: |
-          mv fulldesk-${{ env.VERSION }}-${{ matrix.job.arch }}.deb appimage/fulldesk.deb
+          mv fulldesk-${{ env.VERSION }}-${{ matrix.job.arch }}.deb appimage/rustdesk.deb
 
       - name: Build appimage package
         shell: bash
@@ -1986,7 +1980,7 @@ jobs:
 
       - name: Rename Binary
         run: |
-          mv fulldesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.deb flatpak/fulldesk.deb
+          mv fulldesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.deb flatpak/rustdesk.deb
 
       - uses: rustdesk-org/run-on-arch-action@amd64-support
         name: Build fulldesk flatpak package for ${{ matrix.job.arch }}
