@@ -1653,6 +1653,14 @@ jobs:
           scripts: |
             cd res && HBB=`pwd`/.. FLUTTER=1 makepkg -f --nodeps
 
+      - name: Rename archlinux package
+        if: matrix.job.arch == 'x86_64' && env.UPLOAD_ARTIFACT == 'true'
+        shell: bash
+        run: |
+          for f in res/rustdesk-${{ env.VERSION }}*.zst; do
+            mv "$f" "${f/rustdesk/fulldesk}"
+          done
+
       - name: Publish archlinux package
         if: matrix.job.arch == 'x86_64' && env.UPLOAD_ARTIFACT == 'true'
         uses: softprops/action-gh-release@v1
@@ -1929,6 +1937,14 @@ jobs:
           # run appimage-builder
           pushd appimage
           sudo appimage-builder --skip-tests --recipe ./AppImageBuilder-${{ matrix.job.arch }}.yml
+
+      - name: Rename AppImage
+        shell: bash
+        run: |
+          cd appimage
+          for f in rustdesk-*.AppImage; do
+            mv "$f" "${f/rustdesk/fulldesk}"
+          done
 
       - name: Publish appimage package
         if: env.UPLOAD_ARTIFACT == 'true'
