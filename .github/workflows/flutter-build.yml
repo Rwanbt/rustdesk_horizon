@@ -1658,7 +1658,7 @@ jobs:
         shell: bash
         run: |
           for f in res/rustdesk-${{ env.VERSION }}*.zst; do
-            mv "$f" "${f/rustdesk/fulldesk}"
+            sudo mv "$f" "${f/rustdesk/fulldesk}"
           done
 
       - name: Publish archlinux package
@@ -1943,7 +1943,7 @@ jobs:
         run: |
           cd appimage
           for f in rustdesk-*.AppImage; do
-            mv "$f" "${f/rustdesk/fulldesk}"
+            sudo mv "$f" "${f/rustdesk/fulldesk}"
           done
 
       - name: Publish appimage package
