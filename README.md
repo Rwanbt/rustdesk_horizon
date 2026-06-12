@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="res/logo-header.svg" alt="RustDesk Horizon" width="340">
+<img src="res/Banner_RustDesk_horizon.png" alt="RustDesk Horizon" >
 
-# RustDesk Horizon
+# RustDesk Horizon <img src="res/logo.svg" alt="RustDesk Horizon" >
 
 **Self-hosted remote desktop — with Virtual Display support**
 
